@@ -6,7 +6,7 @@
 
 **one saddle, many coding agents**
 
-A terminal app that rides the official coding-agent CLIs and makes them work together.
+A terminal app that rides the official coding-agent CLIs and makes them work together.  
 One agent works while others check, judge and steer it.
 
 [Website](https://lorenzopi.github.io/jockey/) · [Docs](docs/) · [Install](#install)

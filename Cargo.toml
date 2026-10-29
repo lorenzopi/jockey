@@ -3,7 +3,7 @@ name = "jockey"
 version = "0.1.0"
 edition = "2024"
 description = "One saddle, many coding agents: a TUI that orchestrates Codex, Claude Code and Grok"
-license = "Apache-2.0"
+license = "MIT"
 repository = "https://github.com/lorenzopi/jockey"
 
 [dependencies]

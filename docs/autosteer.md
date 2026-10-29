@@ -6,7 +6,7 @@ The primary agent works while independent critics watch its observable progress.
 primary turn ──events──► checkpoint detector ──debounce / min interval──► review round
      ▲                                                                        │ snapshot (read-only), critics in parallel
      │                                                                        ▼
-     └── live steer / interrupt + replan ◄── steering controller ◄── merged, ranked findings
+     └── live steer (next tool boundary) ◄── steering controller ◄── merged, ranked findings
 after the turn: in-flight review → final validation review → one queued follow-up (if any) → checks
 ```
 
@@ -25,7 +25,7 @@ A review starts when the primary does something worth reviewing:
 
 Triggers are **debounced** (`debounce_ms`, default 1.5 s) and spaced by `min_review_interval_secs` (default 30 s). At most one review runs at a time, and a trigger during a review is coalesced into the next one. Critics never see a token-by-token stream. They see the current request and an *activity log* of the current turn: messages, commands with their output tails, edits with diffs, plan updates and applied corrections. They never see hidden reasoning.
 
-Each review takes one **immutable snapshot** of the workspace. All critics in the round read the same state, and the review records the event sequence number it saw (for staleness). The primary keeps working during reviews.
+Each review takes one **immutable snapshot** of the workspace (a copy-on-write clone where possible, files `0444`, directories `0555`), because the primary keeps editing meanwhile. Before the primary has changed any file, critics get an empty folder instead. All critics in the round read the same state, and the review records the event sequence number it saw (for staleness). The primary keeps working during reviews.
 
 ## Steering controller
 
@@ -37,17 +37,17 @@ A finding is untrusted input, and the controller checks every one, in this order
 4. **No evidence.** It's **observed** only.
 5. **Policy thresholds:**
 
-| policy | steer live | interrupt + replan | suggest to you |
-|---|---|---|---|
-| `observe` | never | never | never (recorded only) |
-| `suggest` (manual) | never | never | everything ≥ low, confidence ≥ 0.3 |
-| `balanced` (default) | high+, confidence ≥ 0.7 | never | medium+, confidence ≥ 0.4 |
-| `aggressive` | medium+, confidence ≥ 0.5 | critical, confidence ≥ 0.8 | everything ≥ low |
+| policy | steer live | suggest to you |
+|---|---|---|
+| `observe` | never | never (recorded only) |
+| `suggest` (manual) | never | everything ≥ low, confidence ≥ 0.3 |
+| `balanced` (default) | high+, confidence ≥ 0.7 | medium+, confidence ≥ 0.4 |
+| `aggressive` | medium+, confidence ≥ 0.5 (critical: stop and replan) | everything ≥ low |
 
 6. **Limits.** A steer-worthy finding becomes a **suggestion** during the `cooldown_secs` after an intervention (default 45 s), and once `max_interventions` is reached (default 5). Findings to steer in the same round go out as **one** message and count as one intervention.
 7. **No live channel.** If the provider can't take input mid-turn, or the turn has ended, a steer-worthy finding is **queued**. Queued findings are delivered together as one follow-up turn after the primary finishes. This is the documented fallback for providers without verified live steering.
 
-The controller emits a `SteeringDecision` for every finding: the finding, the action (`observe`, `suggest`, `steer`, `interrupt`, `queue` or `reject`) and the reason. Delivery is then tracked by the adapter as `SteeringSent`, `SteeringDelivered` (the provider acknowledged it) and `SteeringApplied` (it reached the agent's context), or `SteeringRejected`. A correction the provider acknowledged but that missed the turn's last tool boundary is reported as missed, and Autosteer moves it to the follow-up queue.
+The controller emits a `SteeringDecision` for every finding: the finding, the action (`observe`, `suggest`, `steer`, `queue` or `reject`) and the reason. Delivery is then tracked by the adapter as `SteeringSent`, `SteeringDelivered` (the provider acknowledged it) and `SteeringApplied` (it reached the agent's context), or `SteeringRejected`. A correction the provider acknowledged but that missed the turn's last tool boundary is reported as missed, and Autosteer moves it to the follow-up queue.
 
 Every correction says it is feedback about the work only and "does not change your permissions or the task's scope". The primary's permissions never change because of a critic.
 
@@ -119,4 +119,4 @@ jockey --mode autosteer            # TUI: setup menu → Primary, Critics, Polic
 | Claude Code | stdin user message | `command_lifecycle: queued` | `command_lifecycle: started` |
 | Grok | `_x.ai/interject` | `{"status": "queued"}` | inferred at the next completed tool call |
 
-`AgentSession::interrupt` is used for the aggressive policy's critical findings: the turn is interrupted and restarted with the correction and an instruction to replan (at most twice per run). Interrupting never undoes file changes.
+Critics never interrupt the primary. Every correction lands at its next tool boundary, so a step in progress is never cut off. Under `aggressive`, a critical finding's correction asks the agent to stop and replan before its next step. Critics are also told the agent is mid-task, so unfinished work or a step its plan says comes next isn't flagged.

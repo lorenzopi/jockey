@@ -14,9 +14,8 @@ use crate::security::Profile;
 use anyhow::Result;
 use app::{App, Msg};
 use ratatui::crossterm::event::{
-    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-    Event as CtEvent, KeyEventKind, KeyboardEnhancementFlags, MouseEventKind,
-    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    self, DisableBracketedPaste, EnableBracketedPaste, Event as CtEvent, KeyEventKind,
+    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use ratatui::crossterm::{execute, terminal};
 use std::path::PathBuf;
@@ -57,8 +56,7 @@ pub async fn run(o: TuiOptions) -> Result<i32> {
         app.fallback = o.fallback;
     }
     if needs_agent {
-        app.needs_agent = true;
-        app.open_lab_picker("primary");
+        app.needs_agent = true; // home screen first; Enter opens the lab picker
     } else {
         app.load_models();
     }
@@ -80,18 +78,9 @@ pub async fn run(o: TuiOptions) -> Result<i32> {
     spawn_ticker(tx.clone());
     spawn_signals(tx.clone());
 
-    let mut mouse_on = false;
+    // No mouse capture: text selects and copies like in any terminal; PgUp/PgDn scroll.
     let result: Result<()> = async {
         loop {
-            // Mouse capture follows `app.mouse` (/mouse toggles it).
-            if app.mouse != mouse_on {
-                mouse_on = app.mouse;
-                let _ = if mouse_on {
-                    execute!(std::io::stdout(), EnableMouseCapture)
-                } else {
-                    execute!(std::io::stdout(), DisableMouseCapture)
-                };
-            }
             term.draw(|f| ui::draw(f, &app))?;
             let Some(msg) = rx.recv().await else { break };
             // Some terminals reflow the screen on resize; repaint everything.
@@ -107,12 +96,10 @@ pub async fn run(o: TuiOptions) -> Result<i32> {
                 app.external_edit = false;
                 paused.store(true, Ordering::SeqCst);
                 tokio::time::sleep(Duration::from_millis(80)).await; // let the input thread park
-                let _ = execute!(std::io::stdout(), DisableMouseCapture);
                 ratatui::restore();
                 let edited = edit_externally(&app.editor.text);
                 term = ratatui::try_init()?;
                 term.clear()?;
-                mouse_on = false; // re-enabled at the top of the loop
                 paused.store(false, Ordering::SeqCst);
                 match edited {
                     Ok(t) => app.editor.set(t.trim_end_matches('\n')),
@@ -144,11 +131,7 @@ pub async fn run(o: TuiOptions) -> Result<i32> {
     if enhanced {
         let _ = execute!(std::io::stdout(), PopKeyboardEnhancementFlags);
     }
-    let _ = execute!(
-        std::io::stdout(),
-        DisableBracketedPaste,
-        DisableMouseCapture
-    );
+    let _ = execute!(std::io::stdout(), DisableBracketedPaste);
     ratatui::restore();
     let run_id = app.run.as_ref().map(|r| r.id.clone());
     app.finish_run().await;
@@ -178,19 +161,6 @@ fn spawn_input(tx: mpsc::Sender<Msg>, paused: Arc<AtomicBool>) {
             let msg = match event::read() {
                 Ok(CtEvent::Key(k)) if k.kind != KeyEventKind::Release => Msg::Key(k),
                 Ok(CtEvent::Paste(s)) => Msg::Paste(s),
-                Ok(CtEvent::Mouse(m)) => match m.kind {
-                    MouseEventKind::ScrollUp => Msg::Scroll {
-                        delta: 3,
-                        column: m.column,
-                        row: m.row,
-                    },
-                    MouseEventKind::ScrollDown => Msg::Scroll {
-                        delta: -3,
-                        column: m.column,
-                        row: m.row,
-                    },
-                    _ => continue,
-                },
                 Ok(CtEvent::Resize(..)) => Msg::Resize,
                 _ => continue,
             };

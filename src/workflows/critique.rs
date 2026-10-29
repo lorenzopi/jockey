@@ -1,13 +1,13 @@
-//! Mode 3: primary draft → independent critics in parallel (same snapshot) →
+//! Mode 3: primary draft → independent critics in parallel (read-only workspace) →
 //! merged findings → primary revises → … (≤ revisions) → final checks.
 
-use super::shared::{collect_changes, relativize, run_checks};
+use super::shared::{NO_CHANGES, collect_changes, relativize, run_checks};
 use super::{RunCtx, WorkflowResult, run_turn};
 use crate::config::Critique as CritiqueCfg;
 use crate::critics::{self, Finding};
 use crate::events::EventKind;
 use crate::providers::{AgentSpec, Role, TurnOutcome, TurnStatus};
-use crate::snapshot::Snapshot;
+use crate::snapshot::ReviewDir;
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::Path;
@@ -106,7 +106,7 @@ pub async fn run(
     })
 }
 
-/// Runs every critic concurrently against one immutable snapshot and merges their findings.
+/// Runs every critic concurrently on the finished draft and merges their findings.
 async fn review(
     ctx: &RunCtx,
     o: &CritiqueOpts,
@@ -120,9 +120,11 @@ async fn review(
     } else {
         "revision completed"
     };
+    let dir = ReviewDir::new(&ctx.cwd, changes != NO_CHANGES, false).await?;
     let (draft, changes) = (relativize(draft, &ctx.cwd), relativize(changes, &ctx.cwd));
     review_round(
         ctx,
+        dir.path(),
         &o.critics,
         o.max_parallel_per_provider,
         round,
@@ -132,17 +134,17 @@ async fn review(
     .await
 }
 
-/// One review round: snapshot the workspace once, run every critic on it
-/// concurrently (bounded per provider), merge and rank. Shared with Autosteer.
+/// One review round: every critic reads the same `dir`, concurrently (bounded
+/// per provider); findings are merged and ranked. Shared with Autosteer.
 pub(super) async fn review_round(
     ctx: &RunCtx,
+    dir: &Path,
     critic_specs: &[(AgentSpec, String)],
     max_parallel_per_provider: usize,
     round: u32,
     reason: &str,
     prompt_for: impl Fn(&str) -> String,
 ) -> Result<Vec<Finding>> {
-    let snap = Snapshot::take(&ctx.cwd).await?;
     let labels: Vec<String> = (1..=critic_specs.len())
         .map(|i| format!("critic-{i}"))
         .collect();
@@ -166,7 +168,7 @@ pub(super) async fn review_round(
         .map(|((spec, role), label)| {
             let limit = limits[spec.provider.as_str()].clone();
             let prompt = prompt_for(role);
-            let path = snap.path.clone();
+            let path = dir.to_path_buf();
             async move {
                 let _permit = limit.acquire_owned().await;
                 let (findings, error) = match critic(ctx, spec, label, &path, &prompt).await {
@@ -185,7 +187,6 @@ pub(super) async fn review_round(
             }
         });
     let all: Vec<Finding> = futures_join_all(runs).await.into_iter().flatten().collect();
-    drop(snap);
     let (merged, duplicates) = critics::merge(all);
     ctx.ev
         .emit(EventKind::FindingsMerged {

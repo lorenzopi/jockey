@@ -29,7 +29,6 @@ pub fn draw(f: &mut Frame, app: &App) {
         Constraint::Length(1),
     ])
     .areas(area);
-    app.sup_area.set(Rect::default()); // set again if the supervisor pane is drawn
     if app.show_raw {
         draw_raw(f, app, main);
     } else if app.mode == "single" {
@@ -630,7 +629,11 @@ fn splash(app: &App, height: u16) -> Vec<Line<'static>> {
             Span::styled(what.to_string(), Style::default().fg(theme::muted())),
         ])
     };
-    lines.push(key("Enter", "send a task · while it works, steer it"));
+    if app.needs_agent {
+        lines.push(key("Enter", "start: choose lab › model › thinking"));
+    } else {
+        lines.push(key("Enter", "send a task · while it works, steer it"));
+    }
     lines.push(key("Ctrl+L", "lab › model › thinking"));
     lines.push(key("/mode", "single · cascade · critique · autosteer"));
     lines.push(key("/help", "every key and command"));
@@ -665,10 +668,7 @@ fn draw_transcript(f: &mut Frame, app: &App, area: Rect, pane: Pane) {
         let title = match pane {
             Pane::Primary => format!(" primary · {} ", app.agent_label()),
             _ if app.scroll_sup > 0 => {
-                format!(
-                    " supervisor · ↑ {} lines (wheel here or Alt+PgDn) ",
-                    app.scroll_sup
-                )
+                format!(" supervisor · ↑ {} lines (Alt+PgDn) ", app.scroll_sup)
             }
             _ => " supervisor · reviews, findings, steering ".to_string(),
         };
@@ -678,9 +678,6 @@ fn draw_transcript(f: &mut Frame, app: &App, area: Rect, pane: Pane) {
             .title(Span::styled(title, dim()));
         let inner = block.inner(area);
         f.render_widget(block, area);
-        if pane == Pane::Supervisor {
-            app.sup_area.set(inner); // for routing mouse-wheel scrolls
-        }
         (inner, transcript_lines(app, inner.width as usize, pane))
     };
     if lines.is_empty() && pane == Pane::Supervisor {
@@ -783,7 +780,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     }
     if app.scroll > 0 {
         spans.push(Span::styled(
-            format!("  ↑ scrolled {} lines (wheel/PgDn)", app.scroll),
+            format!("  ↑ scrolled {} lines (PgDn)", app.scroll),
             dim(),
         ));
     }

@@ -9,6 +9,7 @@ use std::time::Duration;
 use tokio::sync::broadcast;
 
 const DIFF_CAP: usize = 60_000;
+pub const NO_CHANGES: &str = "(the agent reported no file changes)";
 const OUTPUT_TAIL: usize = 4_000;
 
 #[derive(Debug, Clone)]
@@ -49,7 +50,7 @@ pub async fn collect_changes(sub: &mut broadcast::Receiver<Event>, label: &str) 
     }
     let mut d = turn_diff.unwrap_or(files);
     if d.trim().is_empty() {
-        d = "(the agent reported no file changes)".into();
+        d = NO_CHANGES.into();
     }
     truncate(&d, DIFF_CAP)
 }
@@ -131,8 +132,8 @@ async fn read_tail(r: &mut (impl tokio::io::AsyncRead + Unpin)) -> Vec<u8> {
     keep
 }
 
-/// Reviewers work in a snapshot, so absolute paths into the real workspace
-/// (in drafts, diffs, check output) are made relative to send them to the copy.
+/// Reviewers may work in a snapshot, so absolute paths into the real workspace
+/// (in drafts, diffs, check output) are made relative to resolve in either.
 pub fn relativize(text: &str, workspace: &std::path::Path) -> String {
     let w = workspace.display().to_string();
     // macOS reports /tmp paths both with and without the /private prefix.

@@ -5,10 +5,10 @@ use crate::config::Config;
 use crate::run::{Run, RunOptions};
 use crate::security::{Profile, RulesApprover};
 
-fn opts(judge: &str, fallback: &str, checks: &[&str], max_attempts: u32) -> CascadeOpts {
+fn opts(judge: &str, fallback: Option<&str>, checks: &[&str], max_attempts: u32) -> CascadeOpts {
     CascadeOpts {
         judge: judge.parse().unwrap(),
-        fallback: fallback.parse().unwrap(),
+        fallback: fallback.map(|f| f.parse().unwrap()),
         threshold: 85,
         max_attempts,
         checks: checks.iter().map(|c| c.to_string()).collect(),
@@ -68,7 +68,7 @@ fn verdicts(evs: &[EventKind]) -> Vec<(u32, u8, bool)> {
 async fn passing_primary_is_accepted_without_escalation() {
     let (res, evs) = cascade(
         "mock",
-        opts("mock", "mock:mock-deep", &["true"], 2),
+        opts("mock", Some("mock:mock-deep"), &["true"], 2),
         "add a feature",
     )
     .await;
@@ -86,7 +86,7 @@ async fn passing_primary_is_accepted_without_escalation() {
 async fn failing_judgement_escalates_to_fallback_with_feedback() {
     let (res, evs) = cascade(
         "mock:mock-weak",
-        opts("mock", "mock:mock-deep", &[], 2),
+        opts("mock", Some("mock:mock-deep"), &[], 2),
         "fix the bug",
     )
     .await;
@@ -99,6 +99,16 @@ async fn failing_judgement_escalates_to_fallback_with_feedback() {
     );
     let roles: Vec<_> = res.agents.iter().map(|a| a.role.as_str()).collect();
     assert_eq!(roles, vec!["primary", "fallback"]);
+}
+
+#[tokio::test]
+async fn without_a_fallback_the_primary_retries() {
+    let (_, evs) = cascade("mock:mock-weak", opts("mock", None, &[], 2), "fix the bug").await;
+    assert_eq!(verdicts(&evs).len(), 2, "judged twice");
+    assert!(
+        evs.iter()
+            .any(|e| matches!(e, EventKind::Escalated { to, .. } if to == "primary retry"))
+    );
 }
 
 #[test]
@@ -131,7 +141,7 @@ fn fallback_prompt_carries_task_prior_work_feedback_and_failing_checks() {
 
 #[tokio::test]
 async fn failing_check_blocks_acceptance_even_when_judge_passes() {
-    let (res, evs) = cascade("mock", opts("mock", "mock", &["exit 3"], 2), "task").await;
+    let (res, evs) = cascade("mock", opts("mock", Some("mock"), &["exit 3"], 2), "task").await;
     assert_eq!(res.outcome.status, TurnStatus::Failed);
     assert!(res.outcome.error.unwrap().contains("not accepted after 2"));
     assert_eq!(verdicts(&evs), vec![(1, 92, false), (2, 92, false)]);
@@ -149,7 +159,7 @@ async fn failing_check_blocks_acceptance_even_when_judge_passes() {
 async fn attempts_are_capped() {
     let (res, evs) = cascade(
         "mock:mock-weak",
-        opts("mock", "mock:mock-weak", &[], 3),
+        opts("mock", Some("mock:mock-weak"), &[], 3),
         "task",
     )
     .await;
@@ -165,7 +175,12 @@ async fn attempts_are_capped() {
 
 #[tokio::test]
 async fn unparseable_verdict_gets_one_retry() {
-    let (res, evs) = cascade("mock", opts("mock", "mock", &[], 1), "MALFORMED request").await;
+    let (res, evs) = cascade(
+        "mock",
+        opts("mock", Some("mock"), &[], 1),
+        "MALFORMED request",
+    )
+    .await;
     assert_eq!(res.outcome.status, TurnStatus::Completed);
     assert_eq!(verdicts(&evs), vec![(1, 92, true)]);
 }
@@ -195,18 +210,14 @@ fn verdict_parsing_is_lenient_but_strict_on_required_fields() {
 }
 
 #[test]
-fn judge_and_fallback_must_be_chosen() {
+fn judge_must_be_chosen_fallback_is_optional() {
     let cfg = crate::config::Cascade::default();
     let err = CascadeOpts::resolve(&cfg, None, None)
         .err()
         .unwrap()
         .to_string();
     assert!(err.contains("--judge"));
-    let o = CascadeOpts::resolve(
-        &cfg,
-        Some("claude".parse().unwrap()),
-        Some("codex".parse().unwrap()),
-    )
-    .unwrap();
+    let o = CascadeOpts::resolve(&cfg, Some("claude".parse().unwrap()), None).unwrap();
     assert_eq!((o.threshold, o.max_attempts), (85, 2));
+    assert!(o.fallback.is_none());
 }

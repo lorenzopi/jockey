@@ -18,7 +18,7 @@ pub enum Policy {
     /// Steer on strong evidence of serious problems; suggest the rest.
     #[default]
     Balanced,
-    /// Steer more readily; interrupt and replan on critical findings.
+    /// Steer more readily; critical findings ask the agent to stop and replan.
     Aggressive,
 }
 
@@ -39,7 +39,6 @@ pub enum Action {
     Observe,
     Suggest,
     Steer,
-    Interrupt,
     /// Steer-worthy but no live channel right now: delivered as a follow-up turn.
     Queue,
     Reject,
@@ -51,7 +50,6 @@ impl Action {
             Self::Observe => "observe",
             Self::Suggest => "suggest",
             Self::Steer => "steer",
-            Self::Interrupt => "interrupt",
             Self::Queue => "queue",
             Self::Reject => "reject",
         }
@@ -66,7 +64,6 @@ pub struct Limits {
 
 struct Thresholds {
     steer: Option<(Severity, f32)>,
-    interrupt: Option<(Severity, f32)>,
     suggest: Option<(Severity, f32)>,
 }
 
@@ -75,22 +72,18 @@ fn thresholds(p: Policy) -> Thresholds {
     match p {
         Policy::Observe => Thresholds {
             steer: None,
-            interrupt: None,
             suggest: None,
         },
         Policy::Suggest => Thresholds {
             steer: None,
-            interrupt: None,
             suggest: Some((Low, 0.3)),
         },
         Policy::Balanced => Thresholds {
             steer: Some((High, 0.7)),
-            interrupt: None,
             suggest: Some((Medium, 0.4)),
         },
         Policy::Aggressive => Thresholds {
             steer: Some((Medium, 0.5)),
-            interrupt: Some((Critical, 0.8)),
             suggest: Some((Low, 0.3)),
         },
     }
@@ -164,7 +157,7 @@ impl Controller {
         }
         if let Some((_, prev)) = self.history.iter().rev().find(|(h, _)| same_issue(h, f)) {
             return match prev {
-                Action::Steer | Action::Interrupt | Action::Queue => {
+                Action::Steer | Action::Queue => {
                     reject("already corrected once; not repeating (loop guard)")
                 }
                 _ => reject("duplicate of an earlier finding"),
@@ -187,7 +180,7 @@ impl Controller {
             action: Action::Suggest,
             reason: r,
         };
-        if meets(t.steer) || meets(t.interrupt) {
+        if meets(t.steer) {
             if self.interventions >= self.limits.max_interventions {
                 return suggest(format!(
                     "intervention limit ({}) reached",
@@ -204,12 +197,6 @@ impl Controller {
                 return Decision {
                     action: Action::Queue,
                     reason: "no live turn; sent as a follow-up".into(),
-                };
-            }
-            if meets(t.interrupt) {
-                return Decision {
-                    action: Action::Interrupt,
-                    reason: "critical finding; interrupt and replan".into(),
                 };
             }
             return Decision {
@@ -240,11 +227,17 @@ impl Controller {
     }
 }
 
-/// One live-steering message for a batch of findings.
+/// One live-steering message for a batch of findings. Providers deliver it at the
+/// agent's next tool boundary, so it never cuts off a step in progress.
 pub fn steer_text(findings: &[&Finding]) -> String {
     let mut s = String::from(
-        "Correction from an independent reviewer watching your progress (automated). Take it into \
-account now, then continue the task:\n",
+        if findings.iter().any(|f| f.severity == Severity::Critical) {
+            "Critical correction from an independent reviewer watching your progress (automated). \
+Before your next step, stop and replan with it in mind, then continue the task:\n"
+        } else {
+            "Correction from an independent reviewer watching your progress (automated). Take it into \
+account now, then continue the task:\n"
+        },
     );
     for f in findings {
         s.push_str(&format!("- [{}] {}", f.severity.as_str(), f.description));
@@ -433,7 +426,7 @@ mod tests {
     }
 
     #[test]
-    fn aggressive_interrupts_on_critical_and_observe_never_acts() {
+    fn aggressive_steers_critical_with_a_replan_and_observe_never_acts() {
         let now = Instant::now();
         let mut a = ctl(Policy::Aggressive);
         assert_eq!(
@@ -449,8 +442,11 @@ mod tests {
                 now
             )
             .action,
-            Action::Interrupt
+            Action::Steer,
+            "steered at the next tool boundary, never interrupted"
         );
+        let crit = f(Severity::Critical, 0.9, "x", "a.rs");
+        assert!(steer_text(&[&crit]).contains("stop and replan"));
         assert_eq!(
             a.decide(
                 &f(

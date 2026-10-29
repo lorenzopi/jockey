@@ -180,7 +180,7 @@ async fn slash_menu_filters_and_completes() {
         app.handle(key(KeyCode::Char(c), KeyModifiers::NONE)).await;
     }
     let names: Vec<_> = app.menu().into_iter().map(|(c, _)| c).collect();
-    assert_eq!(names, vec!["/model", "/mode", "/mouse", "/mock:review"]);
+    assert_eq!(names, vec!["/model", "/mode", "/mock:review"]);
     // Exact matches come first so Enter runs what was typed.
     app.editor.set("/mode");
     assert_eq!(app.menu()[0].0, "/mode");
@@ -368,9 +368,11 @@ async fn switching_to_cascade_opens_role_setup_and_runs() {
     assert_eq!(picker(&app).title, "judge › lab");
     pick_mock(&mut app, &mut rx, 0).await; // mock-fast@low
     assert_eq!(picker(&app).kind, PickKind::Role, "back to the setup menu");
-    assert_eq!(picker(&app).selected, 2, "now on fallback");
+    assert_eq!(picker(&app).selected, 3, "fallback is optional: on Done");
+    assert!(picker(&app).items[2].1.contains("off"));
 
-    press(&mut app, KeyCode::Enter).await; // fallback
+    press(&mut app, KeyCode::Up).await;
+    press(&mut app, KeyCode::Enter).await; // enable fallback
     pick_mock(&mut app, &mut rx, 3).await; // mock-deep@low
     assert_eq!(picker(&app).items[3].0, "done");
     assert_eq!(picker(&app).selected, 3);
@@ -538,25 +540,6 @@ async fn status_line_shows_cli_activity_elapsed_and_tokens() {
 }
 
 #[tokio::test]
-async fn mouse_wheel_scrolls_transcript_and_menus() {
-    let (mut app, _rx) = app();
-    let wheel = |delta| Msg::Scroll {
-        delta,
-        column: 1,
-        row: 1,
-    };
-    app.handle(wheel(3)).await;
-    app.handle(wheel(3)).await;
-    app.handle(wheel(-3)).await;
-    assert_eq!(app.scroll, 3);
-    app.command("/mode").await;
-    app.handle(wheel(-3)).await;
-    assert_eq!(picker(&app).selected, 1, "wheel down moves the highlight");
-    app.command("/mouse").await;
-    assert!(!app.mouse);
-}
-
-#[tokio::test]
 async fn supervisor_pane_scrolls_on_its_own() {
     let (mut app, _rx) = app();
     app.mode = "critique".into();
@@ -564,36 +547,15 @@ async fn supervisor_pane_scrolls_on_its_own() {
         app.transcript
             .push(Entry::Feed(Level::Info, format!("review {i}")));
     }
-    let s = screen(&app); // drawing records where the supervisor pane is
+    let s = screen(&app);
     assert!(
         s.contains("review 59") && !s.contains("review 0 "),
         "follows the bottom"
     );
-    let area = app.sup_area.get();
-    assert!(area.width > 0, "supervisor pane drawn");
-    // Wheel over the supervisor pane scrolls it, not the primary pane.
-    app.handle(Msg::Scroll {
-        delta: 3,
-        column: area.x + 2,
-        row: area.y + 2,
-    })
-    .await;
-    assert_eq!((app.scroll_sup, app.scroll), (3, 0));
-    app.handle(Msg::Scroll {
-        delta: 3,
-        column: 0,
-        row: area.y + 2,
-    })
-    .await;
-    assert_eq!(
-        (app.scroll_sup, app.scroll),
-        (3, 3),
-        "left of it is the primary pane"
-    );
-    // Keyboard: Alt+PgUp / Alt+PgDn.
+    // Alt+PgUp / Alt+PgDn scroll the supervisor pane, not the primary pane.
     app.handle(key(KeyCode::PageUp, KeyModifiers::ALT)).await;
-    assert_eq!(app.scroll_sup, 13);
-    assert!(screen(&app).contains("supervisor · ↑ 13 lines"));
+    assert_eq!((app.scroll_sup, app.scroll), (10, 0));
+    assert!(screen(&app).contains("supervisor · ↑ 10 lines"));
     app.handle(key(KeyCode::PageDown, KeyModifiers::ALT)).await;
     app.handle(key(KeyCode::PageDown, KeyModifiers::ALT)).await;
     assert_eq!(app.scroll_sup, 0);
@@ -819,7 +781,11 @@ async fn without_a_saved_default_the_tui_asks_for_a_model_first() {
         effort: None,
     };
     app.needs_agent = true;
-    app.open_lab_picker("primary");
+    assert!(
+        screen(&app).contains("J O C K E Y"),
+        "home screen, no picker yet"
+    );
+    press(&mut app, KeyCode::Enter).await;
     assert_eq!(picker(&app).kind, PickKind::Lab);
     assert!(screen(&app).contains("no model selected (Ctrl+L)"));
 

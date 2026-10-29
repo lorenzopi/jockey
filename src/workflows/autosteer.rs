@@ -5,7 +5,7 @@
 //! ```text
 //! primary turn ──events──► checkpoint detector ──debounce/interval──► review round (snapshot, critics ∥)
 //!      ▲                                                                       │
-//!      └──── steer (live) / interrupt + replan ◄── controller (policy, dedupe, stale, cooldown, cap)
+//!      └──── steer (live, at the next tool boundary) ◄── controller (policy, dedupe, stale, cooldown, cap)
 //! after the turn: in-flight review → final review → queued follow-up turn → checks
 //! ```
 
@@ -16,6 +16,7 @@ use crate::config::Autosteer as Cfg;
 use crate::critics::{self, Finding};
 use crate::events::{Event, EventKind};
 use crate::providers::{self, AgentSession, AgentSpec, Role, TurnOutcome, TurnStatus};
+use crate::snapshot::ReviewDir;
 use crate::steering::{self, Action, Controller, Limits, Policy};
 use anyhow::Result;
 use std::collections::{HashMap, VecDeque};
@@ -203,15 +204,9 @@ pub async fn run(
     let mut queued: Vec<Finding> = vec![];
     // Steers acknowledged but not yet applied, by steer id.
     let mut inflight: HashMap<String, Vec<Finding>> = HashMap::new();
-    let mut replan: Option<String> = None;
-    let mut replans = 0;
     let mut round = 0;
 
-    let start_turn = |prompt: String| {
-        let (s, em, t) = (session.clone(), em.clone(), ctx.timeout);
-        Box::pin(async move { run_turn(&s, &em, &prompt, t).await })
-    };
-    let mut turn = start_turn(task.to_string());
+    let mut turn = Box::pin(run_turn(&session, &em, task, ctx.timeout));
     let mut review: Option<Review> = None;
     let mut pending: Option<String> = None;
     let mut due = Instant::now();
@@ -219,18 +214,7 @@ pub async fn run(
 
     let outcome: TurnOutcome = loop {
         tokio::select! {
-            out = &mut turn => {
-                let out = out?;
-                if out.status == TurnStatus::Interrupted
-                    && replans < 2
-                    && let Some(p) = replan.take()
-                {
-                    replans += 1;
-                    turn = start_turn(p);
-                    continue;
-                }
-                break out;
-            }
+            out = &mut turn => break out?,
             ev = sub.recv() => match ev {
                 Ok(ev) => {
                     missed_steer(&ev, &mut inflight, &mut queued);
@@ -258,9 +242,7 @@ pub async fn run(
                 review = None;
                 let (seq, findings) = r?;
                 let live = live_capable;
-                if let Some(p) = act(ctx, &session, &mut ctl, &watch, findings, seq, live, &mut sent, &mut queued, &mut inflight).await {
-                    replan = Some(p);
-                }
+                act(ctx, &session, &mut ctl, &watch, findings, seq, live, &mut sent, &mut queued, &mut inflight).await;
             }
         }
     };
@@ -375,9 +357,13 @@ fn start_review<'a>(
     let seq = watch.seq;
     let progress = relativize(&watch.progress(), &ctx.cwd);
     let sent = sent.to_vec();
+    let changed = !watch.file_seq.is_empty();
     Box::pin(async move {
+        // Mid-run reviews overlap the primary's edits, so read a frozen copy (the final one too, for simplicity).
+        let dir = ReviewDir::new(&ctx.cwd, changed, true).await?;
         let findings = review_round(
             ctx,
+            dir.path(),
             &o.critics,
             o.max_parallel_per_provider,
             round,
@@ -390,7 +376,6 @@ fn start_review<'a>(
 }
 
 /// Applies the controller to one round of findings and delivers the result.
-/// Returns a replan prompt when the decision was to interrupt.
 #[allow(clippy::too_many_arguments)]
 async fn act(
     ctx: &RunCtx,
@@ -403,10 +388,9 @@ async fn act(
     sent: &mut Vec<String>,
     queued: &mut Vec<Finding>,
     inflight: &mut HashMap<String, Vec<Finding>>,
-) -> Option<String> {
+) {
     let now = Instant::now().into_std();
     let mut steer = vec![];
-    let mut interrupt = vec![];
     for f in findings {
         let stale = f
             .file
@@ -415,11 +399,8 @@ async fn act(
         let d = ctl.decide(&f, stale, live, now);
         let suggestion =
             matches!(d.action, Action::Suggest).then(|| uuid::Uuid::now_v7().to_string());
-        let text = matches!(
-            d.action,
-            Action::Suggest | Action::Steer | Action::Interrupt
-        )
-        .then(|| steering::steer_text(&[&f]));
+        let text = matches!(d.action, Action::Suggest | Action::Steer)
+            .then(|| steering::steer_text(&[&f]));
         ctx.ev
             .emit(EventKind::SteeringDecision {
                 finding: f.clone(),
@@ -431,21 +412,9 @@ async fn act(
             .await;
         match d.action {
             Action::Steer => steer.push(f),
-            Action::Interrupt => interrupt.push(f),
             Action::Queue => queued.push(f),
             _ => {}
         }
-    }
-    if !interrupt.is_empty() {
-        ctl.record_intervention(now);
-        interrupt.extend(steer);
-        sent.extend(interrupt.iter().map(|f| f.description.clone()));
-        let all: Vec<&Finding> = interrupt.iter().collect();
-        let _ = session.interrupt().await;
-        return Some(format!(
-            "{}\n\nYou were interrupted because of the problem above. Replan with it in mind and continue the original task.",
-            steering::steer_text(&all)
-        ));
     }
     if !steer.is_empty() {
         let batch: Vec<&Finding> = steer.iter().collect();
@@ -466,7 +435,6 @@ async fn act(
             }
         }
     }
-    None
 }
 
 #[cfg(test)]

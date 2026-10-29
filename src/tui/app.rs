@@ -20,12 +20,6 @@ pub enum Msg {
     Key(KeyEvent),
     /// Terminal size changed: redraw from scratch.
     Resize,
-    /// Mouse wheel at (column, row): positive scrolls back.
-    Scroll {
-        delta: i32,
-        column: u16,
-        row: u16,
-    },
     Quit,
     Paste(String),
     Redraw,
@@ -239,7 +233,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/judge", "cascade judge: /judge provider[:model][@effort]"),
     (
         "/fallback",
-        "cascade fallback: /fallback provider[:model][@effort]",
+        "cascade fallback: /fallback provider[:model][@effort] | off",
     ),
     ("/new", "start a new session"),
     ("/history", "browse saved runs and resume one"),
@@ -258,10 +252,6 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/tools", "show or hide tool output and diffs (Ctrl+O)"),
     ("/thinking", "show or hide reasoning summaries (Ctrl+T)"),
     ("/raw", "show raw provider events (Ctrl+R)"),
-    (
-        "/mouse",
-        "toggle mouse wheel scrolling vs native text selection",
-    ),
     ("/help", "keys and commands"),
     ("/quit", "exit"),
 ];
@@ -320,8 +310,6 @@ pub struct App {
     pub tokens_reported: u64,
     pub streamed_chars: usize,
     pub thought_tokens: Option<u64>,
-    /// Mouse capture for wheel scrolling (`/mouse` toggles it for native selection).
-    pub mouse: bool,
     /// Racetrack animation state (interior-mutable: advanced while drawing).
     pub gallop_pos: std::cell::Cell<f32>,
     pub gallop_t: std::cell::Cell<Option<Instant>>,
@@ -345,9 +333,8 @@ pub struct App {
     /// Split-pane layout overrides: flip orientation, zoom one pane.
     pub split_flip: bool,
     pub zoom: Zoom,
-    /// Supervisor pane scroll (lines up from the bottom) and where it was last drawn.
+    /// Supervisor pane scroll (lines up from the bottom).
     pub scroll_sup: usize,
-    pub sup_area: std::cell::Cell<ratatui::layout::Rect>,
     reviews: u32,
     /// No model chosen yet (no flag, no saved default): ask before running anything.
     pub needs_agent: bool,
@@ -449,7 +436,6 @@ impl App {
             tokens_reported: 0,
             streamed_chars: 0,
             thought_tokens: None,
-            mouse: true,
             gallop_pos: Default::default(),
             gallop_t: Default::default(),
             critic_pos: Default::default(),
@@ -467,7 +453,6 @@ impl App {
             split_flip: false,
             zoom: Zoom::None,
             scroll_sup: 0,
-            sup_area: Default::default(),
             reviews: 0,
             critic_count: None,
             needs_agent: false,
@@ -596,32 +581,6 @@ impl App {
                 }
             }
             Msg::Redraw | Msg::Resize => {}
-            Msg::Scroll { delta, column, row } => {
-                if let Some(Popup::Picker(p)) = &mut self.popup {
-                    let len = p.visible().len().saturating_sub(1);
-                    p.selected = if delta > 0 {
-                        p.selected.saturating_sub(1)
-                    } else {
-                        (p.selected + 1).min(len)
-                    };
-                    return;
-                }
-                // The wheel scrolls whichever pane the pointer is over.
-                let over_supervisor = self
-                    .sup_area
-                    .get()
-                    .contains(ratatui::layout::Position::new(column, row));
-                let target = if over_supervisor {
-                    &mut self.scroll_sup
-                } else {
-                    &mut self.scroll
-                };
-                *target = if delta > 0 {
-                    *target + delta as usize
-                } else {
-                    target.saturating_sub(delta.unsigned_abs() as usize)
-                };
-            }
             Msg::Quit => self.quit = true,
             Msg::Bus(ev) => self.on_event(ev),
             Msg::SessionReady(s, a) => {
@@ -1264,6 +1223,9 @@ impl App {
 
     fn submit(&mut self, text: String, follow_up: bool) {
         if text.trim().is_empty() {
+            if self.needs_agent {
+                self.open_lab_picker("primary");
+            }
             return;
         }
         if self.needs_agent {
@@ -1680,14 +1642,13 @@ impl App {
                             .map_or_else(unset, |s| self.spec_label(s))
                     ),
                 ));
+                // Optional: Enter turns it on (pick a model) or off.
                 items.push((
                     "fallback".into(),
-                    format!(
-                        "Fallback  {}",
-                        self.fallback
-                            .as_ref()
-                            .map_or_else(unset, |s| self.spec_label(s))
-                    ),
+                    match &self.fallback {
+                        Some(s) => format!("Fallback  {} · Enter to turn off", self.spec_label(s)),
+                        None => "Fallback  off · primary retries · Enter to enable".into(),
+                    },
                 ));
             }
             "critique" => {
@@ -1915,22 +1876,17 @@ impl App {
             PickKind::Mode => self.set_mode(&v).await,
             PickKind::Role => {
                 if v == "done" {
-                    let missing: Vec<_> = [("judge", &self.judge), ("fallback", &self.fallback)]
-                        .into_iter()
-                        .filter(|(_, s)| self.mode == "cascade" && s.is_none())
-                        .map(|(r, _)| r)
-                        .collect();
-                    if !missing.is_empty() {
-                        self.notice(
-                            Level::Warn,
-                            format!("cascade still needs: {}", missing.join(", ")),
-                        );
+                    if self.mode == "cascade" && self.judge.is_none() {
+                        self.notice(Level::Warn, "cascade still needs: judge");
                         return self.open_role_menu();
                     }
                     return self.notice(Level::Info, self.mode_summary());
                 }
                 if v == "policy" {
                     return self.open_policy_picker();
+                }
+                if v == "fallback" && self.fallback.take().is_some() {
+                    return self.open_role_menu();
                 }
                 if v == "count" {
                     let items = (1..=4)
@@ -2460,6 +2416,10 @@ impl App {
                 },
                 None => self.open_lab_picker("critics"),
             },
+            "/fallback" if arg == Some("off") => {
+                self.fallback = None;
+                self.notice(Level::Info, self.mode_summary());
+            }
             "/judge" | "/fallback" => match arg.map(|a| a.parse::<AgentSpec>()) {
                 Some(Ok(spec)) => {
                     if let Err(e) = providers::adapter(&spec.provider, &self.cfg) {
@@ -2540,15 +2500,6 @@ impl App {
             "/tools" => self.show_tools = !self.show_tools,
             "/thinking" => self.show_reasoning = !self.show_reasoning,
             "/raw" => self.show_raw = !self.show_raw,
-            "/mouse" => {
-                self.mouse = !self.mouse;
-                let msg = if self.mouse {
-                    "mouse wheel scrolling on (hold Option/Alt to select text)"
-                } else {
-                    "mouse capture off: native text selection; scroll with PgUp/PgDn"
-                };
-                self.notice(Level::Info, msg);
-            }
             "/help" => self.notice(Level::Info, HELP),
             "/quit" | "/exit" => self.quit = true,
             other => self.notice(
@@ -2659,11 +2610,14 @@ impl App {
         let label =
             |s: &Option<AgentSpec>| s.as_ref().map_or("unset".into(), |s| self.spec_label(s));
         match self.mode.as_str() {
-            "cascade" => format!(
-                "cascade (judge {}, fallback {})",
-                label(&self.judge),
-                label(&self.fallback)
-            ),
+            "cascade" => match &self.fallback {
+                Some(f) => format!(
+                    "cascade (judge {}, fallback {})",
+                    label(&self.judge),
+                    self.spec_label(f)
+                ),
+                None => format!("cascade (judge {})", label(&self.judge)),
+            },
             "critique" => format!("critique ({})", self.critics_label()),
             "autosteer" => format!(
                 "autosteer ({} · {})",
@@ -2689,7 +2643,9 @@ impl App {
                 "mode: cascade · primary {} · judge {} · fallback {} · threshold {} · max {} attempts · checks: {}",
                 self.agent_label(),
                 label(&self.judge),
-                label(&self.fallback),
+                self.fallback
+                    .as_ref()
+                    .map_or("off".into(), |s| self.spec_label(s)),
                 self.cfg.cascade.threshold,
                 self.cfg.cascade.max_attempts,
                 checks(&self.cfg.cascade.checks)
@@ -2749,7 +2705,7 @@ pub fn policy_label(p: crate::steering::Policy) -> String {
         Observe => "record findings only",
         Suggest => "manual: critics suggest, you choose what to send (Ctrl+S)",
         Balanced => "steer strong, well-evidenced findings; suggest the rest",
-        Aggressive => "steer readily; interrupt and replan on critical findings",
+        Aggressive => "steer readily; critical findings ask for a replan",
     };
     format!("{:<10} {d}", p.as_str())
 }

@@ -20,7 +20,7 @@ Each coding agent is good on its own. jockey gives you one interface to all of t
 | Mode | What happens |
 |---|---|
 | **single** | One agent, one conversation. Type while it works to steer it live. |
-| **cascade** | A primary attempt, then your checks, then a judge in a read-only snapshot. If it's not accepted, a fallback agent tries again with the feedback. |
+| **cascade** | A primary attempt, then your checks, then a judge in a read-only snapshot. If it's not accepted, it retries with the feedback: on a fallback agent if you set one, else on the primary. |
 | **critique** | A draft, then several critics review one read-only snapshot in parallel. Their findings are merged, and the primary revises. |
 | **autosteer** | Critics watch the agent *while it works* and send corrections into the running turn, under a policy you choose. |
 
@@ -30,7 +30,13 @@ Everything runs on the CLIs you already use and are signed in to. jockey never s
 
 You need at least one of `codex`, `claude` or `grok` installed and signed in.
 
-**macOS** (installs the Xcode command line tools and Rust if they're missing):
+**Homebrew**:
+
+```sh
+brew install lorenzopi/jockey/jockey
+```
+
+**macOS** without Homebrew (installs the Xcode command line tools and Rust if they're missing):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/lorenzopi/jockey/main/install.sh | sh
@@ -142,4 +148,4 @@ The tests use no network and no provider usage: each adapter is tested against r
 
 ## License
 
-[Apache-2.0](LICENSE)
+[MIT](LICENSE)

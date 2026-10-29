@@ -1,10 +1,11 @@
-//! Read-only workspace snapshots for judges and critics.
+//! Where judges and critics run.
 //!
-//! Reviewers run inside a copy of the workspace, never the workspace itself.
-//! Files are cloned copy-on-write where the filesystem supports it (APFS,
-//! Btrfs, XFS, ReFS) and plain-copied elsewhere, then chmod'ed read-only. A
-//! reviewer that ignores its provider's read-only mode still cannot touch the
-//! user's files.
+//! Reviewers always run in their provider's read-only mode. They get the real
+//! workspace when the work is finished, an empty folder when nothing changed,
+//! and a snapshot only while the primary may still be editing (autosteer), so
+//! they read one consistent state. Snapshot files are cloned copy-on-write
+//! where the filesystem supports it (APFS, Btrfs, XFS, ReFS) and plain-copied
+//! elsewhere, then chmod'ed read-only.
 
 use anyhow::{Context, Result, bail};
 use std::fs;
@@ -23,6 +24,37 @@ const SKIP: &[&str] = &[
 ];
 const MAX_FILES: usize = 200_000;
 
+pub enum ReviewDir {
+    /// The workspace itself; the work is done, so it holds still.
+    Live(PathBuf),
+    /// No file changes to verify: no workspace access needed.
+    Empty(tempfile::TempDir),
+    /// The primary is still working: freeze what reviewers read.
+    Frozen(Snapshot),
+}
+
+impl ReviewDir {
+    pub async fn new(cwd: &Path, changed: bool, primary_running: bool) -> Result<Self> {
+        Ok(match (changed, primary_running) {
+            (false, _) => Self::Empty(
+                tempfile::Builder::new()
+                    .prefix("jockey-review-")
+                    .tempdir()?,
+            ),
+            (true, false) => Self::Live(cwd.to_path_buf()),
+            (true, true) => Self::Frozen(Snapshot::take(cwd).await?),
+        })
+    }
+
+    pub fn path(&self) -> &Path {
+        match self {
+            Self::Live(p) => p,
+            Self::Empty(d) => d.path(),
+            Self::Frozen(s) => &s.path,
+        }
+    }
+}
+
 pub struct Snapshot {
     root: tempfile::TempDir,
     pub path: PathBuf,
@@ -36,6 +68,13 @@ impl Snapshot {
     }
 
     fn take_blocking(src: &Path) -> Result<Self> {
+        // Home holds protected folders (~/Library) and far too much to copy.
+        if std::env::home_dir().is_some_and(|h| h == src) || src.parent().is_none() {
+            bail!(
+                "reviewers need a project folder, not {}; run jockey inside a project (or use /mode single)",
+                src.display()
+            );
+        }
         let mut count = 0;
         count_tree(src, &mut count).with_context(|| format!("snapshotting {}", src.display()))?;
         let root = tempfile::Builder::new()
@@ -138,6 +177,19 @@ fn set_tree_writable(p: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn review_dir_copies_only_while_the_primary_runs() {
+        let ws = tempfile::tempdir().unwrap();
+        fs::write(ws.path().join("a.rs"), "x").unwrap();
+        let empty = ReviewDir::new(ws.path(), false, true).await.unwrap();
+        assert_eq!(fs::read_dir(empty.path()).unwrap().count(), 0);
+        let live = ReviewDir::new(ws.path(), true, false).await.unwrap();
+        assert_eq!(live.path(), ws.path());
+        let frozen = ReviewDir::new(ws.path(), true, true).await.unwrap();
+        assert_ne!(frozen.path(), ws.path());
+        assert!(frozen.path().join("a.rs").exists());
+    }
 
     #[tokio::test]
     async fn snapshot_is_read_only_and_isolated() {

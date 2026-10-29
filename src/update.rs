@@ -1,11 +1,9 @@
-//! Startup update check: at most every 20 hours, ask GitHub for the newest
-//! version tag, and say how to upgrade for the way jockey was installed.
+//! Startup update check: ask GitHub for the newest version tag (in the
+//! background, so it never delays startup), and say how to upgrade for the
+//! way jockey was installed.
 //! `JOCKEY_NO_UPDATE_CHECK=1` turns it off.
 
-use std::time::Duration;
-
 const TAGS_URL: &str = "https://api.github.com/repos/lorenzopi/jockey/tags";
-const EVERY: Duration = Duration::from_secs(20 * 3600);
 
 pub struct Update {
     pub latest: String,
@@ -22,19 +20,8 @@ pub async fn check() -> Option<Update> {
     (parse(&latest)? > parse(env!("CARGO_PKG_VERSION"))?).then_some(Update { latest, command })
 }
 
-/// Cached in `~/.jockey/latest-version`; refetched once the cache is older than `EVERY`.
+/// Asked fresh every launch: a cached answer hid new releases for hours.
 async fn latest() -> Option<String> {
-    let cache = crate::config::home().join("latest-version");
-    let fresh = std::fs::metadata(&cache)
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|t| t.elapsed().ok())
-        .is_some_and(|age| age < EVERY);
-    if fresh {
-        return std::fs::read_to_string(&cache)
-            .ok()
-            .map(|s| s.trim().to_string());
-    }
     // curl ships with macOS, so no HTTP client dependency.
     let out = tokio::process::Command::new("curl")
         .args(["-fsSL", "--max-time", "5", TAGS_URL])
@@ -42,10 +29,7 @@ async fn latest() -> Option<String> {
         .await
         .ok()?;
     let tags: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).ok()?;
-    let latest = newest(tags.iter().filter_map(|t| t["name"].as_str()))?;
-    let _ = std::fs::create_dir_all(crate::config::home());
-    let _ = std::fs::write(&cache, &latest);
-    Some(latest)
+    newest(tags.iter().filter_map(|t| t["name"].as_str()))
 }
 
 /// Highest `vX.Y.Z` tag, without the `v`; pre-release tags are skipped.

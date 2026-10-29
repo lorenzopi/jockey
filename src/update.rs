@@ -62,6 +62,18 @@ fn parse(v: &str) -> Option<(u64, u64, u64)> {
     it.next().is_none().then_some(p)
 }
 
+/// `jockey update`: runs the upgrade command matching how jockey was installed.
+pub fn run() -> anyhow::Result<i32> {
+    let Some(cmd) = update_command() else {
+        anyhow::bail!("this is a development build; pull and rebuild it instead");
+    };
+    eprintln!("running: {cmd}");
+    let status = std::process::Command::new("sh")
+        .args(["-c", &cmd])
+        .status()?;
+    Ok(status.code().unwrap_or(1))
+}
+
 /// None for a development build, which has nothing to upgrade.
 fn update_command() -> Option<String> {
     let exe = std::env::current_exe().ok()?.canonicalize().ok()?;

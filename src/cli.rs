@@ -89,6 +89,8 @@ enum Cmd {
         #[command(flatten)]
         opts: CommonOpts,
     },
+    /// Update jockey (brew upgrade or cargo install, matching how it was installed)
+    Update,
     /// Print the effective configuration and where it came from
     Config {
         #[arg(long)]
@@ -209,6 +211,7 @@ pub async fn main() -> Result<i32> {
         Some(Cmd::Show { id, format }) => cmd_show(&id, format),
         Some(Cmd::Resume { id, prompt, opts }) => cmd_resume(&id, prompt, opts).await,
         Some(Cmd::Config { cwd }) => cmd_config(cwd),
+        Some(Cmd::Update) => crate::update::run(),
     }
 }
 

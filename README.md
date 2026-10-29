@@ -36,6 +36,8 @@ You need at least one of `codex`, `claude` or `grok` installed and signed in.
 brew install lorenzopi/jockey/jockey
 ```
 
+jockey tells you on its home screen when a new version is out; `jockey update` installs it the same way you installed jockey.
+
 **macOS** without Homebrew (installs the Xcode command line tools and Rust if they're missing):
 
 ```sh

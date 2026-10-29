@@ -625,14 +625,14 @@ fn splash(app: &App, height: u16) -> Vec<Line<'static>> {
     if let Some(u) = &app.update {
         lines.push(Line::from(Span::styled(
             format!(
-                "  ↑ jockey {} is available (you have {}). Update with:",
+                "  ↑ jockey {} is available (you have {}). Quit and run:",
                 u.latest,
                 env!("CARGO_PKG_VERSION")
             ),
             Style::default().fg(theme::accent()),
         )));
         lines.push(Line::from(Span::styled(
-            format!("    {}", u.command),
+            format!("    jockey update   ({})", u.command),
             Style::default().add_modifier(Modifier::BOLD),
         )));
     }
@@ -661,9 +661,9 @@ fn splash(app: &App, height: u16) -> Vec<Line<'static>> {
         &MARK_SMALL
     } else if room >= MARK_SMALL.len() + 3 {
         lines.truncate(3); // title, tagline, cwd
-        if let Some(u) = &app.update {
+        if app.update.is_some() {
             lines.push(Line::from(Span::styled(
-                format!("  ↑ update: {}", u.command),
+                "  ↑ update available: jockey update".to_string(),
                 Style::default().fg(theme::accent()),
             )));
         }

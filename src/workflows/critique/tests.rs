@@ -131,6 +131,46 @@ async fn critics_run_on_one_snapshot_findings_merge_and_primary_revises() {
 }
 
 #[tokio::test]
+async fn gate_lets_the_user_pick_whose_findings_go_back() {
+    for (keep, revises) in [(vec![], false), (vec!["critic-2".to_string()], true)] {
+        let (gtx, mut grx) = mpsc::channel(1);
+        let mut o = opts("mock:mock-weak", CritiqueCfg::default());
+        o.gate = Some(gtx);
+        let answer = keep.clone();
+        let asked = tokio::spawn(async move {
+            let (critics, reply) = grx.recv().await.unwrap();
+            reply.send(answer).unwrap();
+            critics
+        });
+        let (_, evs) = critique("mock:mock-weak", o, "price bonds").await;
+        let critics = asked.await.unwrap();
+        assert_eq!(critics.len(), 3, "every critic with findings is offered");
+        assert_eq!(critics[1], ("critic-2".into(), "security".into(), 2));
+        let merged = evs
+            .iter()
+            .position(|e| matches!(e, EventKind::FindingsMerged { .. }))
+            .unwrap();
+        let revised = evs[merged..]
+            .iter()
+            .any(|e| matches!(e, EventKind::AgentCompleted { .. }));
+        assert_eq!(revised, revises, "keep {keep:?}");
+    }
+}
+
+#[tokio::test]
+async fn critic_whose_turn_ends_on_a_denied_tool_gets_one_retry() {
+    let (_, evs) = critique("mock", opts("mock", CritiqueCfg::default()), "deny-tool").await;
+    let errors: Vec<_> = evs
+        .iter()
+        .filter_map(|e| match e {
+            EventKind::CritiqueReceived { error, .. } => Some(error.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(errors, vec![None, None, None], "every critic recovered");
+}
+
+#[tokio::test]
 async fn critics_run_concurrently() {
     // 3 critics on one provider with parallelism 3 should overlap: all three start
     // before any reports back.

@@ -62,7 +62,7 @@ You can always steer yourself: type while the agent works and press Enter. In Au
 This is from `jockey --mode autosteer --agent mock:mock-slow` (the built-in mock, balanced policy, two critics), as shown in the TUI's split pane:
 
 ```
- primary · mock-slow ───────────────────────────── supervisor · reviews, findings, steering ─────
+ primary · mock-slow ───────────────────────────── supervisor · Ctrl+Z zoom · Alt+PgUp scroll ─────
 › price the bond                                   ◆ review 1 (src/lib.rs changed): 2 critic(s) on one snapshot
   ✓ ls                                               ◆ critic-1 (correctness): 2 finding(s)
   ✎ update src/lib.rs                                ◆ critic-2 (security): 2 finding(s)

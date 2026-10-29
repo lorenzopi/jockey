@@ -2,7 +2,8 @@
 //! TUI without spending provider quota. Never touches the filesystem.
 //!
 //! Prompt keywords change the script: `approve` asks for a command approval,
-//! `fail` ends the turn with an error. Steering is acknowledged immediately
+//! `fail` ends the turn with an error, and a reviewer given `deny-tool` ends
+//! its first turn as if a permission was denied. Steering is acknowledged immediately
 //! and applied at the next step, like a real tool boundary.
 
 use super::*;
@@ -282,6 +283,23 @@ impl MockSession {
 
     /// Reviewer behavior: a JSON verdict that fails weak drafts.
     async fn judge(&self, prompt: &str) -> Result<TurnOutcome, Stop> {
+        // `deny-tool`: the turn ends like Grok's does on a denied permission.
+        if prompt.contains("deny-tool") {
+            return Ok(TurnOutcome {
+                status: TurnStatus::Failed,
+                final_text: String::new(),
+                error: Some("a denied permission ended the turn (mock)".into()),
+            });
+        }
+        if prompt.contains("You are a read-only reviewer") {
+            let text = r#"{"findings": []}"#.to_string();
+            self.say_once(&text).await?;
+            return Ok(TurnOutcome {
+                status: TurnStatus::Completed,
+                final_text: text,
+                error: None,
+            });
+        }
         if let Some(progress) = prompt.split("<progress>\n").nth(1) {
             return self
                 .watch(progress.split("</progress>").next().unwrap_or(""))
@@ -565,6 +583,10 @@ impl AgentSession for MockSession {
         Ok(())
     }
 
+    async fn set_profile(&self, _profile: Profile) -> Result<()> {
+        Ok(())
+    }
+
     async fn native_command(&self, name: &str) -> Result<Option<TurnOutcome>> {
         if name != "review" {
             bail!("mock has no native command '{name}' (try: review)");
@@ -602,6 +624,7 @@ mod tests {
             allow_credits: false,
             resume_id: None,
             stderr_log: None,
+            live_profile: false,
         }
     }
 

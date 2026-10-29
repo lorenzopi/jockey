@@ -96,6 +96,7 @@ fn spec() -> SessionSpec {
         allow_credits: false,
         resume_id: None,
         stderr_log: None,
+        live_profile: false,
     }
 }
 

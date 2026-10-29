@@ -192,6 +192,8 @@ pub struct CodexSession {
     ev: Emitter,
     /// (model, effort) applied to every subsequent turn.
     opts: Mutex<(Option<String>, Option<String>)>,
+    /// Set once the profile changes mid-session; sent with every later turn.
+    profile: Mutex<Option<Profile>>,
     allow_credits: bool,
 }
 
@@ -210,6 +212,7 @@ impl CodexSession {
             child: tokio::sync::Mutex::new(child),
             ev,
             opts: Mutex::new((spec.model.clone(), spec.effort.clone())),
+            profile: Mutex::new(None),
             allow_credits: spec.allow_credits,
         });
         tokio::spawn(pump(s.clone(), rx, spec.approver.clone()));
@@ -442,11 +445,28 @@ impl AgentSession for CodexSession {
         if let Some(e) = effort {
             params["effort"] = json!(e);
         }
+        if let Some(p) = *self.profile.lock().unwrap() {
+            let (_, approval, reviewer) = native_policy(p);
+            let sandbox = match p {
+                Profile::ReadOnly => "readOnly",
+                Profile::WorkspaceWrite | Profile::Auto => "workspaceWrite",
+                Profile::Full => "dangerFullAccess",
+            };
+            params["sandboxPolicy"] = json!({"type": sandbox});
+            params["approvalPolicy"] = json!(approval);
+            params["approvalsReviewer"] = json!(reviewer);
+        }
         self.run_turn("turn/start", params).await
     }
 
     async fn set_turn_options(&self, model: Option<String>, effort: Option<String>) -> Result<()> {
         *self.opts.lock().unwrap() = (model, effort);
+        Ok(())
+    }
+
+    /// Takes effect from the next turn (turn/start overrides persist for the thread).
+    async fn set_profile(&self, profile: Profile) -> Result<()> {
+        *self.profile.lock().unwrap() = Some(profile);
         Ok(())
     }
 

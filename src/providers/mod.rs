@@ -104,6 +104,8 @@ pub struct SessionSpec {
     /// Provider session to resume instead of starting fresh.
     pub resume_id: Option<String>,
     pub stderr_log: Option<PathBuf>,
+    /// The TUI may change this session's profile later (Shift+Tab).
+    pub live_profile: bool,
 }
 
 impl SessionSpec {
@@ -179,6 +181,10 @@ pub trait AgentSession: Send + Sync {
         _effort: Option<String>,
     ) -> Result<()> {
         unsupported(self.provider(), "changing model mid-session")
+    }
+    /// Changes the permission profile for the rest of the session (Shift+Tab in the TUI).
+    async fn set_profile(&self, _profile: Profile) -> Result<()> {
+        unsupported(self.provider(), "changing permissions mid-session")
     }
     /// Provider-native action (`/codex:review`). `None` when it doesn't produce a turn.
     async fn native_command(&self, _name: &str) -> Result<Option<TurnOutcome>> {

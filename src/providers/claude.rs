@@ -104,6 +104,10 @@ impl ProviderAdapter for Claude {
         let (mode, extra) = native_policy(spec.effective_profile());
         args.extend(["--permission-mode".into(), mode.into()]);
         args.extend(extra.iter().map(|s| s.to_string()));
+        if spec.live_profile && spec.effective_profile() != Profile::ReadOnly {
+            // Lets Shift+Tab switch to yolo later; it doesn't turn bypass on.
+            args.push("--allow-dangerously-skip-permissions".into());
+        }
         match &spec.resume_id {
             Some(id) => args.extend(["--resume".into(), id.clone()]),
             None => args.extend(["--session-id".into(), session_id.clone()]),
@@ -355,6 +359,8 @@ pub struct ClaudeSession {
     child: tokio::sync::Mutex<Option<ManagedChild>>,
     ev: Emitter,
     allow_credits: bool,
+    /// Started read-only: the tool allowlist can't be widened mid-session.
+    read_only: bool,
 }
 
 impl ClaudeSession {
@@ -382,6 +388,7 @@ impl ClaudeSession {
             child: tokio::sync::Mutex::new(child),
             ev,
             allow_credits: spec.allow_credits,
+            read_only: spec.effective_profile() == Profile::ReadOnly,
         });
         tokio::spawn(pump(s.clone(), rx, spec.approver.clone()));
         if let Err(e) = s.setup(&spec).await {
@@ -679,6 +686,19 @@ impl AgentSession for ClaudeSession {
         }
         self.wire
             .control(json!({"subtype": "interrupt", "cancel_queued": true}))
+            .await
+            .map(|_| ())
+    }
+
+    async fn set_profile(&self, profile: Profile) -> Result<()> {
+        // Read-only is a tool allowlist fixed at launch; permission modes alone
+        // (dontAsk) still run tools the user's Claude settings allow.
+        if self.read_only != (profile == Profile::ReadOnly) {
+            bail!("claude's read-only tool list is set at launch");
+        }
+        let mode = native_policy(profile).0;
+        self.wire
+            .control(json!({"subtype": "set_permission_mode", "mode": mode}))
             .await
             .map(|_| ())
     }

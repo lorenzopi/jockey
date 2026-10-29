@@ -4,7 +4,8 @@ use super::app::{App, Entry, Level, Popup, SteerState, ToolState, Zoom};
 use super::theme;
 use super::track;
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::buffer::Buffer;
+use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
@@ -18,17 +19,26 @@ fn dim() -> Style {
 
 pub fn draw(f: &mut Frame, app: &App) {
     let area = f.area();
+    app.sup_area.set(Rect::default());
     let width = area.width.saturating_sub(2).max(1) as usize;
     let (rows, cursor) = app.editor.layout(width);
     let editor_h = rows.len().clamp(1, 8) as u16 + 2;
-    let [main, track_area, status, editor, footer] = Layout::vertical([
+    // The last five prompts, pinned on top (fewer in a short window).
+    let prompts = &app.prompts;
+    let keep = prompts.len().min(5).min(area.height as usize / 5);
+    let recent = &prompts[prompts.len() - keep..];
+    let pinned_h = if keep == 0 { 0 } else { keep as u16 + 1 };
+    let [pinned, main, track_area, status, editor, footer, perms] = Layout::vertical([
+        Constraint::Length(pinned_h),
         Constraint::Min(1),
         Constraint::Length(track::height(app)),
         Constraint::Length(1),
         Constraint::Length(editor_h),
         Constraint::Length(1),
+        Constraint::Length(1),
     ])
     .areas(area);
+    draw_pinned(f, recent, pinned);
     if app.show_raw {
         draw_raw(f, app, main);
     } else if app.mode == "single" {
@@ -40,6 +50,15 @@ pub fn draw(f: &mut Frame, app: &App) {
     draw_status(f, app, status);
     draw_editor(f, app, editor, rows, cursor);
     draw_footer(f, app, footer);
+    draw_permissions(f, app, perms);
+    if let Some((a, b)) = app.selection {
+        let buf = f.buffer_mut();
+        for (y, x0, x1) in selected_rows(a, b, buf.area) {
+            for x in x0..=x1 {
+                buf[(x, y)].modifier.insert(Modifier::REVERSED);
+            }
+        }
+    }
 
     let menu = app.menu();
     if !menu.is_empty() {
@@ -445,8 +464,13 @@ fn transcript_lines(app: &App, width: usize, pane: Pane) -> Vec<Line<'static>> {
                 let head = if findings.is_empty() {
                     format!("round {round}: no findings, nothing to revise")
                 } else {
+                    let next = if app.cfg.critique.ask {
+                        "you pick what goes back"
+                    } else {
+                        "sent back for revision"
+                    };
                     format!(
-                        "round {round}: {} finding(s) sent back for revision ({duplicates} duplicates merged)",
+                        "round {round}: {} finding(s), {next} ({duplicates} duplicates merged)",
                         findings.len()
                     )
                 };
@@ -464,11 +488,7 @@ fn transcript_lines(app: &App, width: usize, pane: Pane) -> Vec<Line<'static>> {
                         (Some(p), None) => format!(" ({p})"),
                         _ => String::new(),
                     };
-                    let who = if f.critics.len() > 1 {
-                        format!(" ×{}", f.critics.len())
-                    } else {
-                        String::new()
-                    };
+                    let who = format!(" · {}", f.critics.join(", "));
                     o.push(
                         &format!("    [{} {:.2}] ", f.severity.as_str(), f.confidence),
                         sev,
@@ -690,7 +710,7 @@ fn draw_transcript(f: &mut Frame, app: &App, area: Rect, pane: Pane) {
             _ if app.scroll_sup > 0 => {
                 format!(" supervisor · ↑ {} lines (Alt+PgDn) ", app.scroll_sup)
             }
-            _ => " supervisor · reviews, findings, steering ".to_string(),
+            _ => " supervisor · Ctrl+Z zoom · Alt+PgUp scroll · Ctrl+O details ".to_string(),
         };
         let block = Block::default()
             .borders(Borders::TOP)
@@ -712,8 +732,11 @@ fn draw_transcript(f: &mut Frame, app: &App, area: Rect, pane: Pane) {
     let h = area.height as usize;
     let max_scroll = lines.len().saturating_sub(h);
     let scroll = if pane == Pane::Supervisor {
+        app.sup_area.set(area);
+        app.max_scroll_sup.set(max_scroll);
         app.scroll_sup.min(max_scroll)
     } else {
+        app.max_scroll.set(max_scroll);
         app.scroll.min(max_scroll)
     };
     let start = lines.len().saturating_sub(h + scroll);
@@ -721,8 +744,48 @@ fn draw_transcript(f: &mut Frame, app: &App, area: Rect, pane: Pane) {
     f.render_widget(Paragraph::new(lines[start..end].to_vec()), area);
 }
 
+/// Rows (y, first x, last x) a terminal-style selection from `a` to `b` covers, clipped to `area`.
+fn selected_rows(a: Position, b: Position, area: Rect) -> Vec<(u16, u16, u16)> {
+    let (a, b) = if (a.y, a.x) <= (b.y, b.x) {
+        (a, b)
+    } else {
+        (b, a)
+    };
+    if area.is_empty() {
+        return vec![];
+    }
+    let last = area.right() - 1;
+    (a.y..=b.y.min(area.bottom() - 1))
+        .map(|y| {
+            let x0 = if y == a.y { a.x.min(last) } else { area.x };
+            let x1 = if y == b.y { b.x.min(last) } else { last };
+            (y, x0, x1)
+        })
+        .collect()
+}
+
+/// The text under a mouse selection, one line per row, trailing blanks trimmed.
+pub fn selected_text(buf: &Buffer, a: Position, b: Position) -> String {
+    let rows = selected_rows(a, b, buf.area);
+    let lines: Vec<String> = rows
+        .into_iter()
+        .map(|(y, x0, x1)| {
+            let mut line = String::new();
+            let mut x = x0;
+            while x <= x1 {
+                let sym = buf[(x, y)].symbol();
+                line.push_str(sym);
+                x += sym.width().max(1) as u16; // skip the filler cell after a wide char
+            }
+            line.trim_end().to_string()
+        })
+        .collect();
+    lines.join("\n")
+}
+
 fn draw_raw(f: &mut Frame, app: &App, area: Rect) {
     let h = area.height.saturating_sub(2) as usize;
+    app.max_scroll.set(app.raw.len().saturating_sub(h));
     let rows: Vec<Line> = app
         .raw
         .iter()
@@ -798,6 +861,15 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(theme::warn()),
         ));
     }
+    if app.gate.is_some() {
+        spans.push(Span::styled(
+            "  ◇ critics done, waiting for your pick (Ctrl+S)",
+            Style::default().fg(theme::accent()),
+        ));
+    }
+    if app.copied {
+        spans.push(Span::styled("  copied (click to clear)", dim()));
+    }
     if app.scroll > 0 {
         spans.push(Span::styled(
             format!("  ↑ scrolled {} lines (PgDn)", app.scroll),
@@ -833,7 +905,7 @@ fn draw_editor(f: &mut Frame, app: &App, area: Rect, rows: Vec<String>, cursor: 
     f.render_widget(Paragraph::new(lines).block(block), area);
     if app.popup.is_none() {
         f.set_cursor_position((
-            area.x + 1 + cursor.1 as u16,
+            area.x + cursor.1 as u16, // no left border: text starts at column 0
             area.y + 1 + (cursor.0 - first) as u16,
         ));
     }
@@ -847,11 +919,7 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
         _ => cwd,
     };
     let model = app.agent_label();
-    let profile = serde_json::to_value(app.profile)
-        .ok()
-        .and_then(|v| v.as_str().map(String::from))
-        .unwrap_or_default();
-    let left = format!("{cwd} · {} · {model} · {profile}", app.mode_badge());
+    let left = format!("{cwd} · {} · {model}", app.mode_badge());
     let mut right = vec![];
     if app.usage.tokens_in > 0 {
         right.push(format!(
@@ -888,6 +956,55 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
     let mut spans = vec![Span::styled(left, dim()), Span::raw(" ".repeat(pad))];
     spans.extend(right_spans);
     f.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// One line per message you sent, labelled by kind, newlines flattened, cut to the width.
+fn draw_pinned(f: &mut Frame, prompts: &[(String, &'static str)], area: Rect) {
+    if prompts.is_empty() {
+        return;
+    }
+    let lines: Vec<Line> = prompts
+        .iter()
+        .map(|(p, kind)| {
+            let label = format!("{kind} › ");
+            // Rose is the critics' color everywhere else in the UI.
+            let color = match *kind {
+                "steer" => theme::ok(),
+                "queued" => theme::info(),
+                "critic" => theme::rider(),
+                _ => theme::accent(),
+            };
+            let w = (area.width as usize).saturating_sub(label.width() + 1);
+            let flat = p.split_whitespace().collect::<Vec<_>>().join(" ");
+            Line::from(vec![
+                Span::styled(
+                    label,
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(clip(&flat, w), Style::default().fg(color)),
+            ])
+        })
+        .collect();
+    let block = Block::default()
+        .borders(Borders::BOTTOM)
+        .border_style(dim());
+    f.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+/// The bottom line, like Claude Code's mode line.
+fn draw_permissions(f: &mut Frame, app: &App, area: Rect) {
+    use crate::security::Profile;
+    let (text, color) = match app.profile {
+        Profile::ReadOnly => ("⏵⏵ read-only mode", theme::info()),
+        Profile::WorkspaceWrite => ("⏵⏵ workspace-write mode", theme::muted()),
+        Profile::Auto => ("⏵⏵ auto mode on", theme::warn()),
+        Profile::Full => ("⏵⏵ yolo mode on · never asks", theme::err()),
+    };
+    let line = Line::from(vec![
+        Span::styled(text, Style::default().fg(color)),
+        Span::styled(" (shift+tab to cycle)", dim()),
+    ]);
+    f.render_widget(Paragraph::new(line), area);
 }
 
 /// "45s", "10m 6s", "1h 2m": the same shape Claude Code uses.

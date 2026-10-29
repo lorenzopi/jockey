@@ -13,6 +13,7 @@ use crate::security::{Approver, Profile, RulesApprover};
 use crate::sessions::AgentAssignment;
 use anyhow::Result;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::broadcast;
@@ -23,7 +24,10 @@ type Named = (Arc<dyn AgentSession>, AgentAssignment);
 pub struct RunCtx {
     pub cfg: Config,
     pub cwd: PathBuf,
-    pub profile: Profile,
+    /// For sessions started from now on; Shift+Tab in the TUI changes it.
+    pub profile: Mutex<Profile>,
+    /// Set by the TUI, the only place a running session's profile can change.
+    pub live_profile: AtomicBool,
     /// `--allow-credits` for this run; per-provider config can also allow it.
     pub allow_credits: bool,
     pub timeout: Duration,
@@ -61,7 +65,8 @@ impl RunCtx {
         Self {
             cfg,
             cwd,
-            profile,
+            profile: Mutex::new(profile),
+            live_profile: AtomicBool::new(false),
             allow_credits,
             timeout,
             run_dir,
@@ -142,18 +147,21 @@ impl RunCtx {
         let model = spec.model.clone().or(pcfg.model);
         let effort = spec.effort.clone().or(pcfg.effort);
         let em = self.ev.for_agent(&spec.provider, label);
+        let profile = *self.profile.lock().unwrap();
         let session = adapter
             .start_session(
                 SessionSpec {
                     cwd: cwd.map_or_else(|| self.cwd.clone(), Path::to_path_buf),
                     model: model.clone(),
                     effort: effort.clone(),
-                    profile: self.profile,
+                    profile,
                     role,
                     approver,
                     allow_credits: self.allow_credits || pcfg.allow_credits,
                     resume_id,
                     stderr_log: Some(self.run_dir.join("raw").join(format!("{label}.stderr.log"))),
+                    live_profile: role == Role::Primary
+                        && self.live_profile.load(Ordering::Relaxed),
                 },
                 em,
             )

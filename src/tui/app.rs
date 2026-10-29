@@ -9,9 +9,14 @@ use crate::security::{ApprovalRequest, Approver, Decision, Profile, command_allo
 use crate::sessions::{self, AgentAssignment};
 use anyhow::Result;
 use async_trait::async_trait;
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::buffer::Buffer;
+use ratatui::crossterm::event::{
+    KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
+use ratatui::layout::{Position, Rect};
 use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
+use std::sync::atomic::Ordering as AtomicOrdering;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -22,6 +27,11 @@ pub enum Msg {
     Resize,
     Quit,
     Paste(String),
+    Mouse(MouseEvent),
+    /// The live session refused a profile switch: (still in effect, refused, why).
+    ProfileRefused(Profile, Profile, String),
+    /// Critique paused after a review: (critic, focus, findings) → critics to keep.
+    Gate(Vec<(String, String, usize)>, oneshot::Sender<Vec<String>>),
     Redraw,
     Bus(Event),
     SessionReady(Arc<dyn AgentSession>, AgentAssignment),
@@ -172,6 +182,8 @@ pub enum PickKind {
     Policy,
     /// Autosteer suggestions to send as steers.
     Suggestion,
+    /// Which critics' findings go back to the primary (critique with `ask`).
+    Gate,
     /// Which role of a multi-model mode to (re)assign.
     Role,
     Lab,
@@ -221,12 +233,15 @@ pub fn lab_name(provider: &str) -> &str {
 
 pub const COMMANDS: &[(&str, &str)] = &[
     ("/model", "pick lab › model › thinking (Ctrl+L)"),
-    ("/effort", "pick reasoning effort (Shift+Tab cycles)"),
+    ("/effort", "pick reasoning effort (Ctrl+Y cycles)"),
     (
         "/agent",
         "switch provider: /agent codex | claude | grok | mock",
     ),
-    ("/profile", "permission profile for new sessions"),
+    (
+        "/profile",
+        "permissions: read-only, workspace-write, auto, yolo (Shift+Tab cycles)",
+    ),
     ("/mode", "pick a mode, then set up its models"),
     (
         "/critics",
@@ -318,8 +333,14 @@ pub struct App {
     pub critic_pos: std::cell::Cell<f32>,
     /// The last turn's finish line, shown briefly after it ends.
     pub finish: Option<Finish>,
+    /// What you sent this conversation, as typed, with its kind: "you", "you + !cmd",
+    /// "steer", "queued", or "critic" (a suggestion you sent with Ctrl+S).
+    pub prompts: Vec<(String, &'static str)>,
     /// Critics currently reviewing (for the second lane).
     pub reviewing: usize,
+    /// This review round's critics, and how many of them failed.
+    review_total: usize,
+    review_failed: usize,
     tool_started: std::collections::HashMap<String, Instant>,
     /// When each transcript entry appeared, for the ease-in.
     pub born: Vec<Instant>,
@@ -337,6 +358,23 @@ pub struct App {
     pub zoom: Zoom,
     /// Supervisor pane scroll (lines up from the bottom).
     pub scroll_sup: usize,
+    /// Furthest `scroll` can go, as of the last draw; keeps the wheel from overscrolling.
+    pub max_scroll: std::cell::Cell<usize>,
+    /// The last drawn frame, so a mouse selection can be read back as text.
+    pub screen: Buffer,
+    /// Mouse selection (anchor, cursor) in screen cells; highlighted until the next click.
+    pub selection: Option<(Position, Position)>,
+    pub copied: bool,
+    /// Where the supervisor pane was last drawn (empty when hidden), for the wheel.
+    pub sup_area: std::cell::Cell<Rect>,
+    pub max_scroll_sup: std::cell::Cell<usize>,
+    /// Orders Shift+Tab switches sent to the live session.
+    profile_seq: Arc<std::sync::atomic::AtomicU64>,
+    profile_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Profiles the live session refused; Shift+Tab skips them until /new.
+    profile_refused: Vec<Profile>,
+    /// A paused critique waiting for you to pick whose findings go back.
+    pub gate: Option<crate::workflows::critique::GateAsk>,
     pub update: Option<crate::update::Update>,
     reviews: u32,
     /// No model chosen yet (no flag, no saved default): ask before running anything.
@@ -443,7 +481,10 @@ impl App {
             gallop_t: Default::default(),
             critic_pos: Default::default(),
             finish: None,
+            prompts: vec![],
             reviewing: 0,
+            review_total: 0,
+            review_failed: 0,
             tool_started: Default::default(),
             born: vec![],
             mode: "single".into(),
@@ -456,6 +497,16 @@ impl App {
             split_flip: false,
             zoom: Zoom::None,
             scroll_sup: 0,
+            max_scroll: Default::default(),
+            screen: Buffer::default(),
+            selection: None,
+            copied: false,
+            sup_area: Default::default(),
+            max_scroll_sup: Default::default(),
+            gate: None,
+            profile_seq: Arc::default(),
+            profile_lock: Arc::default(),
+            profile_refused: vec![],
             update: None,
             reviews: 0,
             critic_count: None,
@@ -503,8 +554,14 @@ impl App {
                 set(&mut self.activity, "thinking", None);
             }
             ToolStarted { title, .. } => set(&mut self.activity, "tool", Some(title.clone())),
-            ReviewTriggered { critics, .. } => self.reviewing = critics.len(),
-            CritiqueReceived { .. } => self.reviewing = self.reviewing.saturating_sub(1),
+            ReviewTriggered { critics, .. } => {
+                self.reviewing = critics.len();
+                (self.review_total, self.review_failed) = (critics.len(), 0);
+            }
+            CritiqueReceived { error, .. } => {
+                self.reviewing = self.reviewing.saturating_sub(1);
+                self.review_failed += error.is_some() as usize;
+            }
             FindingsMerged { .. } => self.reviewing = 0,
             ToolCompleted { .. } | ApprovalResolved { .. } => {
                 set(&mut self.activity, "thinking", None)
@@ -582,6 +639,25 @@ impl App {
             Msg::Paste(s) => {
                 if self.popup.is_none() {
                     self.editor.insert(&s);
+                }
+            }
+            Msg::Mouse(m) => self.on_mouse(m),
+            Msg::ProfileRefused(kept, refused, why) => {
+                self.apply_profile(kept);
+                self.profile_refused.push(refused);
+                self.notice(
+                    Level::Warn,
+                    format!(
+                        "still {}: {why}; {} applies after /new",
+                        kept.label(),
+                        refused.label()
+                    ),
+                );
+            }
+            Msg::Gate(critics, reply) => {
+                self.gate = Some((critics, reply));
+                if self.popup.is_none() {
+                    self.open_gate(); // else the status line points to Ctrl+S
                 }
             }
             Msg::Redraw | Msg::Resize => {}
@@ -901,6 +977,14 @@ impl App {
                 error,
             }), // Autosteer shows each finding with its decision instead.
             FindingsMerged { .. } if self.mode == "autosteer" => {}
+            FindingsMerged { round, .. }
+                if self.review_total > 0 && self.review_failed == self.review_total =>
+            {
+                self.transcript.push(Entry::Feed(
+                    Level::Warn,
+                    format!("round {round}: every critic failed, so nothing was reviewed"),
+                ))
+            }
             FindingsMerged {
                 round,
                 findings,
@@ -1059,6 +1143,9 @@ impl App {
                     return;
                 }
             };
+            run.ctx
+                .live_profile
+                .store(true, std::sync::atomic::Ordering::Relaxed);
             forward(run.subscribe(), self.tx.clone());
             let root = run.root.clone();
             let mode = run.meta.mode.clone();
@@ -1141,8 +1228,20 @@ impl App {
             .map(W::Cascade)
         } else {
             let flags = self.critic_flags(self.cfg.critique.count);
-            critique::CritiqueOpts::resolve(&self.cfg.critique, &self.agent, &flags)
-                .map(W::Critique)
+            let ask = self.cfg.critique.ask;
+            let tx = self.tx.clone();
+            critique::CritiqueOpts::resolve(&self.cfg.critique, &self.agent, &flags).map(|mut o| {
+                if ask {
+                    let (gtx, mut grx) = mpsc::channel(1);
+                    tokio::spawn(async move {
+                        while let Some((c, r)) = grx.recv().await {
+                            let _ = tx.send(Msg::Gate(c, r)).await;
+                        }
+                    });
+                    o.gate = Some(gtx);
+                }
+                W::Critique(o)
+            })
         };
         let w = match w {
             Ok(w) => w,
@@ -1186,6 +1285,7 @@ impl App {
     }
 
     fn interrupt(&mut self) {
+        self.gate = None;
         if let Some(task) = self.cascade_task.take().filter(|t| !t.is_finished()) {
             // Stop the workflow and its reviewers; interrupt (don't kill) the
             // primary so the conversation continues with the next prompt.
@@ -1247,6 +1347,12 @@ impl App {
         }
         self.history_pos = None;
         if !self.busy() {
+            let kind = if self.pending_context.is_empty() {
+                "you"
+            } else {
+                "you + !cmd"
+            };
+            self.prompts.push((text.clone(), kind));
             self.start_turn(text);
             return;
         }
@@ -1256,6 +1362,7 @@ impl App {
             && !follow_up
             && let Some(s) = self.run.as_ref().and_then(|r| r.ctx.session("primary"))
         {
+            self.prompts.push((text.clone(), "steer"));
             return self.steer_with(s, text);
         }
         let can_steer = self
@@ -1270,10 +1377,12 @@ impl App {
                     "this provider can't take input mid-run; queued as a follow-up",
                 );
             }
+            self.prompts.push((text.clone(), "queued"));
             self.queue.push_back(text);
             return;
         }
         let s = self.session.clone().unwrap();
+        self.prompts.push((text.clone(), "steer"));
         self.steer_with(s, text);
     }
 
@@ -1339,8 +1448,14 @@ impl App {
                     self.open_role_menu()
                 };
             }
-            (KeyCode::BackTab, ..) => return self.cycle_effort(),
+            // Some terminals send Shift+Tab as Tab with Shift held.
+            (KeyCode::BackTab, ..) => return self.cycle_profile(),
+            (KeyCode::Tab, ..) if k.modifiers.contains(KeyModifiers::SHIFT) => {
+                return self.cycle_profile();
+            }
+            (KeyCode::Char('y'), true, _) => return self.cycle_effort(),
             (KeyCode::Char('o'), true, _) => return self.show_tools = !self.show_tools,
+            (KeyCode::Char('s'), true, _) if self.gate.is_some() => return self.open_gate(),
             (KeyCode::Char('s'), true, _) => return self.open_suggestions(),
             (KeyCode::Char('\\') | KeyCode::Char('4'), true, _) => {
                 return self.split_flip = !self.split_flip;
@@ -1665,6 +1780,14 @@ impl App {
                     "count".into(),
                     format!("Count     {} critic(s)", self.effective_critic_count()),
                 ));
+                items.push((
+                    "ask".into(),
+                    if self.cfg.critique.ask {
+                        "Review    ask me which critics to send · Enter for automatic".into()
+                    } else {
+                        "Review    findings go straight back · Enter to ask me first".into()
+                    },
+                ));
             }
             "autosteer" => {
                 items.push((
@@ -1825,6 +1948,7 @@ impl App {
             PickKind::Mode => return self.open_mode_picker(),
             PickKind::Policy => return self.open_policy_picker(),
             PickKind::Suggestion => return self.open_suggestions(),
+            PickKind::Gate => return self.open_gate(),
             PickKind::Count => return self.open_role_menu(),
             PickKind::Role => return self.open_role_menu(),
             PickKind::Lab => return self.open_lab_picker("primary"),
@@ -1840,10 +1964,21 @@ impl App {
                     .unwrap_or_default();
                 return self.open_effort_picker(&provider, &model, "primary");
             }
-            PickKind::Profile => ["read-only", "workspace-write", "auto"]
-                .iter()
-                .map(|p| (p.to_string(), p.to_string()))
-                .collect(),
+            PickKind::Profile => [
+                ("read-only", "read-only · no edits"),
+                (
+                    "workspace-write",
+                    "workspace-write · edits here, asks for the rest",
+                ),
+                (
+                    "auto",
+                    "auto · the provider's reviewer approves routine actions",
+                ),
+                ("full", "yolo · runs anything, never asks"),
+            ]
+            .iter()
+            .map(|(v, l)| (v.to_string(), l.to_string()))
+            .collect(),
             PickKind::History => sessions::list_runs(50)
                 .into_iter()
                 .map(|m| {
@@ -1869,7 +2004,7 @@ impl App {
                 .collect(),
         };
         let title = match kind {
-            PickKind::Profile => "profile (new sessions)",
+            PickKind::Profile => "permissions (Shift+Tab cycles)",
             _ => "resume a saved run",
         };
         self.show_picker(kind, title.into(), &provider, None, "primary", items);
@@ -1889,6 +2024,10 @@ impl App {
                 }
                 if v == "policy" {
                     return self.open_policy_picker();
+                }
+                if v == "ask" {
+                    self.cfg.critique.ask = !self.cfg.critique.ask;
+                    return self.open_role_menu();
                 }
                 if v == "fallback" && self.fallback.take().is_some() {
                     return self.open_role_menu();
@@ -1946,7 +2085,7 @@ impl App {
                 self.choose(&role, &pk.provider.clone(), pk.model.clone(), Some(v))
                     .await;
             }
-            PickKind::Profile => self.set_profile(&v),
+            PickKind::Profile => self.set_profile_str(&v),
             PickKind::History => self.resume(&v),
             PickKind::Policy => {
                 if let Ok(p) = <crate::steering::Policy as clap::ValueEnum>::from_str(&v, true) {
@@ -1962,6 +2101,7 @@ impl App {
                 }
             }
             PickKind::Suggestion => self.send_suggestion(&v),
+            PickKind::Gate => self.answer_gate(&v),
             PickKind::Count => {
                 self.critic_count = v.parse().ok();
                 self.open_role_menu();
@@ -2033,6 +2173,49 @@ impl App {
         );
     }
 
+    pub fn open_gate(&mut self) {
+        let Some((critics, reply)) = &self.gate else {
+            return;
+        };
+        if reply.is_closed() {
+            self.gate = None; // the critique was stopped
+            return;
+        }
+        let mut items = vec![("all".to_string(), "Send all findings".to_string())];
+        for (label, role, n) in critics {
+            items.push((
+                label.clone(),
+                format!("Only {label} ({role}) · {n} finding(s)"),
+            ));
+        }
+        items.push(("none".into(), "Send nothing · stop here".into()));
+        let pr = self.agent.provider.clone();
+        self.show_picker(
+            PickKind::Gate,
+            "critics done · what goes back to the primary? (Esc: later, Ctrl+S)".into(),
+            &pr,
+            None,
+            "primary",
+            items,
+        );
+    }
+
+    fn answer_gate(&mut self, v: &str) {
+        let Some((critics, reply)) = self.gate.take() else {
+            return;
+        };
+        let (keep, note) = match v {
+            "all" => (
+                critics.into_iter().map(|c| c.0).collect(),
+                "revising with every critic's findings".to_string(),
+            ),
+            "none" => (vec![], "nothing sent; the critique stops here".to_string()),
+            c => (vec![c.to_string()], format!("revising with {c}'s findings")),
+        };
+        let _ = reply.send(keep);
+        self.notice(Level::Info, note);
+    }
+
     pub fn open_suggestion_count(&self) -> usize {
         self.suggestions.iter().filter(|s| !s.sent).count()
     }
@@ -2049,7 +2232,10 @@ impl App {
             .clone()
             .or_else(|| self.run.as_ref().and_then(|r| r.ctx.session("primary")));
         match session.filter(|_| self.busy()) {
-            Some(s) => self.steer_with(s, text),
+            Some(s) => {
+                self.prompts.push((text.clone(), "critic"));
+                self.steer_with(s, text)
+            }
             None => {
                 self.editor.set(&text);
                 self.notice(
@@ -2080,15 +2266,75 @@ impl App {
         }
     }
 
-    fn set_profile(&mut self, v: &str) {
-        if let Ok(p) = <Profile as clap::ValueEnum>::from_str(v, true) {
-            self.profile = p;
-            let note = if self.session.is_some() {
-                " (applies after /new)"
-            } else {
-                ""
-            };
-            self.notice(Level::Info, format!("profile: {v}{note}"));
+    fn set_profile_str(&mut self, v: &str) {
+        match <Profile as clap::ValueEnum>::from_str(v, true) {
+            Ok(p) => self.set_profile(p),
+            Err(_) => self.notice(
+                Level::Warn,
+                format!("unknown profile '{v}' (read-only, workspace-write, auto, yolo)"),
+            ),
+        }
+    }
+
+    /// Workspace-write → auto → yolo → read-only → …, skipping what this session refused.
+    fn cycle_profile(&mut self) {
+        let next = |p| match p {
+            Profile::WorkspaceWrite => Profile::Auto,
+            Profile::Auto => Profile::Full,
+            Profile::Full => Profile::ReadOnly,
+            Profile::ReadOnly => Profile::WorkspaceWrite,
+        };
+        let mut p = next(self.profile);
+        while self.profile_refused.contains(&p) && p != self.profile {
+            p = next(p);
+        }
+        if p != self.profile {
+            self.set_profile(p);
+        }
+    }
+
+    /// Applies to the live primary when its provider can switch, else from the next session.
+    fn set_profile(&mut self, p: Profile) {
+        let prev = self.profile;
+        self.apply_profile(p);
+        let session = self
+            .session
+            .clone()
+            .or_else(|| self.run.as_ref().and_then(|r| r.ctx.session("primary")));
+        let Some(s) = session else { return };
+        // One switch at a time, in order; a newer press makes older ones moot.
+        let seq = self.profile_seq.fetch_add(1, AtomicOrdering::SeqCst) + 1;
+        let (latest, lock, tx) = (
+            self.profile_seq.clone(),
+            self.profile_lock.clone(),
+            self.tx.clone(),
+        );
+        if s.provider() == "codex" && self.busy() {
+            self.notice(
+                Level::Info,
+                format!("codex runs as {} from its next turn", p.label()),
+            );
+        }
+        tokio::spawn(async move {
+            // Settle first, so cycling quickly past yolo never applies it.
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            let _one_at_a_time = lock.lock().await;
+            if latest.load(AtomicOrdering::SeqCst) != seq {
+                return;
+            }
+            if let Err(e) = s.set_profile(p).await {
+                // Not applied: show what the session really runs as.
+                let _ = tx
+                    .send(Msg::ProfileRefused(prev, p, format!("{e:#}")))
+                    .await;
+            }
+        });
+    }
+
+    fn apply_profile(&mut self, p: Profile) {
+        self.profile = p;
+        if let Some(r) = &self.run {
+            *r.ctx.profile.lock().unwrap() = p;
         }
     }
 
@@ -2223,21 +2469,57 @@ impl App {
         self.apply_turn_options();
     }
 
+    fn on_mouse(&mut self, m: MouseEvent) {
+        let at = Position::new(m.column, m.row);
+        match m.kind {
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                let n = if m.kind == MouseEventKind::ScrollUp {
+                    3
+                } else {
+                    -3
+                };
+                if self.sup_area.get().contains(at) {
+                    self.scroll_sup = self
+                        .scroll_sup
+                        .saturating_add_signed(n)
+                        .min(self.max_scroll_sup.get());
+                } else {
+                    self.scroll = self
+                        .scroll
+                        .saturating_add_signed(n)
+                        .min(self.max_scroll.get());
+                }
+                self.selection = None; // the text under it just moved
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.selection = Some((at, at));
+                self.copied = false;
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                if let Some(s) = &mut self.selection {
+                    s.1 = at;
+                }
+            }
+            MouseEventKind::Up(MouseButton::Left) => match self.selection {
+                Some((a, b)) if a != b => {
+                    let text = crate::tui::ui::selected_text(&self.screen, a, b);
+                    self.copied = pbcopy(&text);
+                    if !self.copied {
+                        self.notice(Level::Warn, "copy failed (pbcopy)");
+                    }
+                }
+                _ => self.selection = None, // plain click clears
+            },
+            _ => {}
+        }
+    }
+
     fn copy_last(&mut self) {
         let Some(text) = self.last_answer.clone() else {
             self.notice(Level::Info, "nothing to copy yet");
             return;
         };
-        // MacOS pbcopy only; add wl-copy/xclip/clip.exe with the Linux/Windows builds.
-        let ok = std::process::Command::new("pbcopy")
-            .stdin(std::process::Stdio::piped())
-            .spawn()
-            .and_then(|mut c| {
-                use std::io::Write;
-                c.stdin.take().unwrap().write_all(text.as_bytes())?;
-                c.wait()
-            })
-            .is_ok_and(|s| s.success());
+        let ok = pbcopy(&text);
         self.notice(
             Level::Info,
             if ok {
@@ -2318,6 +2600,8 @@ impl App {
         self.run = None;
         self.session = None;
         self.transcript.clear();
+        self.prompts.clear();
+        self.profile_refused.clear();
         for e in events {
             self.on_event(e);
         }
@@ -2364,11 +2648,7 @@ impl App {
                 None => self.open_picker(PickKind::Effort),
             },
             "/profile" => match arg {
-                Some("full") => self.notice(
-                    Level::Warn,
-                    "the full profile needs `jockey --dangerously-allow-all` on the command line",
-                ),
-                Some(p) => self.set_profile(p),
+                Some(p) => self.set_profile_str(p),
                 None => self.open_picker(PickKind::Profile),
             },
             "/agent" => match arg {
@@ -2443,6 +2723,8 @@ impl App {
                 }
                 self.finish_run().await;
                 self.transcript.clear();
+                self.prompts.clear();
+                self.profile_refused.clear();
                 self.raw.clear();
                 self.queue.clear();
                 self.pending_resume = None;
@@ -2724,6 +3006,19 @@ pub fn policy_label(p: crate::steering::Policy) -> String {
     format!("{:<10} {d}", p.as_str())
 }
 
+// MacOS pbcopy only; add wl-copy/xclip/clip.exe with the Linux/Windows builds.
+fn pbcopy(text: &str) -> bool {
+    std::process::Command::new("pbcopy")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut c| {
+            use std::io::Write;
+            c.stdin.take().unwrap().write_all(text.as_bytes())?;
+            c.wait()
+        })
+        .is_ok_and(|s| s.success())
+}
+
 fn cfg_spec(s: &Option<String>) -> Option<AgentSpec> {
     s.as_deref().and_then(|s| s.parse().ok())
 }
@@ -2731,8 +3026,9 @@ fn cfg_spec(s: &Option<String>) -> Option<AgentSpec> {
 pub const HELP: &str = "\
 Enter send · Shift+Enter, Ctrl+J or \\+Enter newline · / commands · !cmd run shell (output added to next prompt; !! to not add)
 While working: Enter steers the agent now · Alt+Enter queues a follow-up · Alt+Up edits the queue · Esc interrupts
-Ctrl+L model · Shift+Tab effort · Ctrl+O tool output · Ctrl+T reasoning · Ctrl+R raw events · Ctrl+X copy answer
-Ctrl+G external editor · PgUp/PgDn or Shift+Up/Down scroll · Ctrl+C interrupt/clear/quit · Ctrl+D quit";
+Ctrl+L model · Shift+Tab permissions (… yolo) · Ctrl+Y effort · Ctrl+O tool output · Ctrl+T reasoning · Ctrl+R raw events · Ctrl+X copy answer
+Ctrl+Z zoom pane · Ctrl+\\ stack panes · Alt+PgUp/PgDn scroll supervisor · Ctrl+S critic picks/suggestions
+Ctrl+G external editor · wheel, PgUp/PgDn or Shift+Up/Down scroll · drag to copy · Ctrl+C interrupt/clear/quit · Ctrl+D quit";
 
 /// Forwards a run's events into the app loop until the run closes.
 fn forward(mut rx: broadcast::Receiver<Event>, tx: mpsc::Sender<Msg>) {

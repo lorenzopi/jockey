@@ -13,7 +13,12 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Semaphore;
+use tokio::sync::{Semaphore, mpsc, oneshot};
+
+/// Asks the user whose findings go back: (critic, focus, findings) per critic
+/// that found something; the reply names the critics to keep.
+pub type Gate = mpsc::Sender<GateAsk>;
+pub type GateAsk = (Vec<(String, String, usize)>, oneshot::Sender<Vec<String>>);
 
 pub struct CritiqueOpts {
     /// (agent, focus role) per critic.
@@ -22,6 +27,8 @@ pub struct CritiqueOpts {
     pub checks: Vec<String>,
     pub check_timeout: Duration,
     pub max_parallel_per_provider: usize,
+    /// Set by the TUI when `[critique] ask` is on.
+    pub gate: Option<Gate>,
 }
 
 impl CritiqueOpts {
@@ -55,6 +62,7 @@ impl CritiqueOpts {
             checks: cfg.checks.clone(),
             check_timeout: Duration::from_secs(cfg.check_timeout_secs),
             max_parallel_per_provider: cfg.max_parallel_per_provider.max(1),
+            gate: None,
         })
     }
 }
@@ -77,7 +85,10 @@ pub async fn run(
             break;
         }
         let changes = collect_changes(&mut sub, "primary").await;
-        let findings = review(ctx, o, round, task, &outcome.final_text, &changes).await?;
+        let mut findings = review(ctx, o, round, task, &outcome.final_text, &changes).await?;
+        if let Some(gate) = &o.gate {
+            findings = ask(gate, &o.critics, findings).await;
+        }
         if findings.is_empty() {
             break;
         }
@@ -104,6 +115,35 @@ pub async fn run(
         outcome,
         agents: vec![assignment],
     })
+}
+
+/// Waits for the user to pick whose findings go back; none picked ends the rounds.
+async fn ask(gate: &Gate, critics: &[(AgentSpec, String)], findings: Vec<Finding>) -> Vec<Finding> {
+    if findings.is_empty() {
+        return findings;
+    }
+    let found = critics
+        .iter()
+        .enumerate()
+        .map(|(i, (_, role))| {
+            let label = format!("critic-{}", i + 1);
+            let n = findings
+                .iter()
+                .filter(|f| f.critics.contains(&label))
+                .count();
+            (label, role.clone(), n)
+        })
+        .filter(|c| c.2 > 0)
+        .collect();
+    let (tx, rx) = oneshot::channel();
+    if gate.send((found, tx)).await.is_err() {
+        return findings;
+    }
+    let keep = rx.await.unwrap_or_default();
+    findings
+        .into_iter()
+        .filter(|f| f.critics.iter().any(|c| keep.contains(c)))
+        .collect()
 }
 
 /// Runs every critic concurrently on the finished draft and merges their findings.
@@ -211,20 +251,23 @@ async fn critic(
     let em = ctx.ev.for_agent(&spec.provider, label);
     let result = async {
         let out = run_turn(&session, &em, prompt, ctx.timeout).await?;
-        if out.status != TurnStatus::Completed {
-            anyhow::bail!("critic did not finish: {}", out.error.unwrap_or_default());
+        // One nudge, never a loop: for a critic that forgot the JSON, or one whose
+        // turn ended early (Grok ends the whole turn when a tool is denied).
+        let nudge = match out.status {
+            TurnStatus::Completed => match critics::parse_findings(&out.final_text, label) {
+                Some(f) => return Ok(f),
+                None => "Reply again with ONLY the JSON object described above, nothing else.",
+            },
+            TurnStatus::Failed if out.error.as_deref().is_some_and(|e| e.contains("denied")) => {
+                DENIED_NUDGE
+            }
+            _ => anyhow::bail!("critic did not finish: {}", out.error.unwrap_or_default()),
+        };
+        let retry = run_turn(&session, &em, nudge, ctx.timeout).await?;
+        if retry.status != TurnStatus::Completed {
+            let e = retry.error.or(out.error).unwrap_or_default();
+            anyhow::bail!("critic did not finish: {e}");
         }
-        if let Some(f) = critics::parse_findings(&out.final_text, label) {
-            return Ok(f);
-        }
-        // One nudge for a critic that forgot the JSON; never loop.
-        let retry = run_turn(
-            &session,
-            &em,
-            "Reply again with ONLY the JSON object described above, nothing else.",
-            ctx.timeout,
-        )
-        .await?;
         critics::parse_findings(&retry.final_text, label)
             .ok_or_else(|| anyhow::anyhow!("critic returned no parseable findings"))
     }
@@ -232,6 +275,11 @@ async fn critic(
     session.cancel().await;
     result
 }
+
+const DENIED_NUDGE: &str = "Your last turn stopped early, probably because a tool you tried was \
+denied. You are a read-only reviewer: shell commands, web access and edits are not available. \
+Use only file read and search tools, or none. Reply now with ONLY the JSON object described \
+above, nothing else.";
 
 /// Polls futures concurrently without pulling in the `futures` crate.
 async fn futures_join_all<F: std::future::Future>(

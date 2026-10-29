@@ -28,8 +28,22 @@ pub enum Profile {
     WorkspaceWrite,
     /// Workspace edits; the provider's own auto-review approves routine actions.
     Auto,
-    /// Provider bypass mode. Only reachable with `--dangerously-allow-all`.
+    /// Provider bypass mode ("yolo"). Headless runs need `--dangerously-allow-all`.
+    #[serde(alias = "yolo")]
+    #[value(alias = "yolo")]
     Full,
+}
+
+impl Profile {
+    /// What the TUI calls it.
+    pub fn label(self) -> &'static str {
+        match self {
+            Profile::ReadOnly => "read-only",
+            Profile::WorkspaceWrite => "workspace-write",
+            Profile::Auto => "auto",
+            Profile::Full => "yolo",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

@@ -195,7 +195,10 @@ pub struct GrokSession {
     child: tokio::sync::Mutex<Option<ManagedChild>>,
     ev: Emitter,
     cwd: PathBuf,
-    profile: Profile,
+    /// Jockey answers Grok's permission requests from this, so it can change live.
+    profile: Mutex<Profile>,
+    /// Grok's own auto mode, fixed at session start.
+    auto_mode: bool,
 }
 
 impl GrokSession {
@@ -212,7 +215,8 @@ impl GrokSession {
             child: tokio::sync::Mutex::new(child),
             ev,
             cwd: spec.cwd.clone(),
-            profile: spec.effective_profile(),
+            profile: Mutex::new(spec.effective_profile()),
+            auto_mode: spec.effective_profile() == Profile::Auto,
         });
         tokio::spawn(pump(s.clone(), rx, spec.approver.clone()));
         if let Err(e) = s.setup(&spec).await {
@@ -243,9 +247,10 @@ impl GrokSession {
         }
 
         let meta = json!({
-            // Never inherit always-approve from ~/.grok/config.toml.
-            "yoloMode": self.profile == Profile::Full,
-            "autoMode": self.profile == Profile::Auto,
+            // Never inherit always-approve from ~/.grok/config.toml. Yolo is jockey
+            // approving every request instead, so it can be switched off again.
+            "yoloMode": false,
+            "autoMode": self.auto_mode,
         });
         let session_id = match &spec.resume_id {
             Some(id) => {
@@ -583,6 +588,16 @@ impl AgentSession for GrokSession {
             .await
     }
 
+    async fn set_profile(&self, profile: Profile) -> Result<()> {
+        // Grok's own auto-approval can't be turned off mid-session, so nothing below
+        // auto is honest here; refuse (keeping the current profile) instead.
+        if self.auto_mode && profile < Profile::Auto {
+            bail!("grok's own auto-approval stays on until /new");
+        }
+        *self.profile.lock().unwrap() = profile;
+        Ok(())
+    }
+
     async fn set_turn_options(&self, model: Option<String>, effort: Option<String>) -> Result<()> {
         let sid = self.sid();
         if let Some(m) = model {
@@ -809,8 +824,10 @@ async fn answer_request(
         && std::path::Path::new(path).starts_with(&s.cwd)
         && !path.contains("..")
         && resolves_inside(std::path::Path::new(path), &s.cwd);
-    let (decision, by) = match s.profile {
+    let profile = *s.profile.lock().unwrap();
+    let (decision, by) = match profile {
         Profile::ReadOnly => (Decision::Decline, "profile"),
+        Profile::Full => (Decision::Accept, "profile"),
         Profile::WorkspaceWrite | Profile::Auto if in_workspace => (Decision::Accept, "profile"),
         _ => {
             s.ev.emit(EventKind::ApprovalRequested {

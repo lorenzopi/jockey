@@ -80,6 +80,8 @@ pub struct Critique {
     pub check_timeout_secs: u64,
     /// Critics running at once against one provider.
     pub max_parallel_per_provider: usize,
+    /// TUI: pause after each review so you choose which critics' findings go back.
+    pub ask: bool,
 }
 
 impl Default for Critique {
@@ -95,6 +97,7 @@ impl Default for Critique {
             checks: vec![],
             check_timeout_secs: 600,
             max_parallel_per_provider: 3,
+            ask: false,
         }
     }
 }

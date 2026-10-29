@@ -73,6 +73,10 @@ primary draft ─► critics in parallel (each its own focus) ─► merge + ran
 5. **Revision.** The merged findings go back to the primary as suggestions only: they can't change its permissions or the task. With no findings, the round ends without a revision.
 6. **Checks** in `[critique] checks` run at the end, and a failing check fails the run. There's one review and revise round by default (`revisions`, capped at 5).
 
+**Choosing what goes back (TUI).** Turn on the setup menu's Review row ("ask me first") or set `[critique] ask = true`, and the critique pauses after each review. You pick **all** findings, **only one critic's**, or **nothing**, which stops without a revision. Esc puts off the choice; Ctrl+S reopens it. Each finding in the supervisor pane lists the critics that reported it.
+
+**Reading critiques.** In multi-agent modes the critic results appear in the right-hand supervisor pane. The mouse wheel scrolls whichever pane it's over, and Alt+PgUp/PgDn also scrolls the supervisor pane. Ctrl+Z cycles zoom through primary only, supervisor only and both, Ctrl+\ stacks the panes, and Ctrl+O shows each finding's evidence and proposed fix.
+
 **Critics default to the primary's model** (`count` copies, default 3). To change that, use `--critics a,b,c`, `[critique] critics = [...]` or, in the TUI, the setup menu's Critics row ("Same as primary" or any lab › model › thinking).
 
 ```sh
@@ -88,6 +92,7 @@ roles = ["correctness", "security", "performance"]
 revisions = 1
 checks = ["cargo test"]
 max_parallel_per_provider = 3
+ask = false             # TUI: pause after each review to pick whose findings go back
 ```
 
 Events: `ReviewTriggered`, `CritiqueReceived` (per critic: findings or error), `FindingsMerged` (round, ranked findings, duplicates).

@@ -127,6 +127,7 @@ fn spec(allow_credits: bool) -> SessionSpec {
         allow_credits,
         resume_id: None,
         stderr_log: None,
+        live_profile: false,
     }
 }
 

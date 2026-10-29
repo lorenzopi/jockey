@@ -7,7 +7,8 @@ use crate::providers::AgentSpec;
 use crate::security::Profile;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
+use ratatui::style::Style;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
@@ -103,7 +104,16 @@ async fn prompt_streams_steers_and_saves_run() {
 
     let s = screen(&app);
     assert!(s.contains("› implement pricing"), "{s}");
-    assert!(s.contains("· mock-fast ·"), "{s}");
+    let top: Vec<&str> = s.lines().take(2).map(str::trim_end).collect();
+    assert_eq!(
+        top,
+        [
+            "you › implement pricing",
+            "steer › use continuous compounding"
+        ],
+        "pinned on top"
+    );
+    assert!(s.contains("· mock-fast "), "{s}");
     assert!(s.contains("applied"), "{s}");
 
     let dir = app.run.as_ref().unwrap().dir.clone();
@@ -194,14 +204,42 @@ async fn slash_menu_filters_and_completes() {
 }
 
 #[tokio::test]
-async fn shift_tab_cycles_effort_from_model_list() {
+async fn ctrl_y_cycles_effort_from_model_list() {
     let (mut app, mut rx) = app();
     app.load_models();
     pump_until(&mut app, &mut rx, |a| !a.models.is_empty()).await;
-    app.handle(key(KeyCode::BackTab, KeyModifiers::SHIFT)).await;
+    app.handle(key(KeyCode::Char('y'), KeyModifiers::CONTROL))
+        .await;
     assert_eq!(app.agent.effort.as_deref(), Some("low"));
-    app.handle(key(KeyCode::BackTab, KeyModifiers::SHIFT)).await;
+    app.handle(key(KeyCode::Char('y'), KeyModifiers::CONTROL))
+        .await;
     assert_eq!(app.agent.effort.as_deref(), Some("high"));
+}
+
+#[tokio::test]
+async fn shift_tab_cycles_permissions_through_yolo() {
+    use crate::security::Profile;
+    let (mut app, _rx) = app();
+    let mut seen = vec![];
+    for _ in 0..4 {
+        app.handle(key(KeyCode::BackTab, KeyModifiers::SHIFT)).await;
+        seen.push(app.profile);
+    }
+    assert_eq!(
+        seen,
+        [
+            Profile::Auto,
+            Profile::Full,
+            Profile::ReadOnly,
+            Profile::WorkspaceWrite
+        ]
+    );
+    app.command("/profile yolo").await;
+    assert_eq!(app.profile, Profile::Full);
+    assert!(screen(&app).contains("yolo mode on · never asks (shift+tab to cycle)"));
+    // Terminals that report Shift+Tab as Tab with Shift held.
+    app.handle(key(KeyCode::Tab, KeyModifiers::SHIFT)).await;
+    assert_eq!(app.profile, Profile::ReadOnly);
 }
 
 #[tokio::test]
@@ -294,7 +332,7 @@ async fn ctrl_l_walks_lab_model_thinking() {
     assert!(app.popup.is_none());
     assert_eq!(app.agent.model.as_deref(), Some("mock-deep"));
     assert_eq!(app.agent.effort.as_deref(), Some("medium"));
-    assert!(screen(&app).contains("· mock-deep@medium ·"));
+    assert!(screen(&app).contains("· mock-deep@medium "));
 }
 
 #[tokio::test]
@@ -428,7 +466,8 @@ async fn critique_defaults_to_primary_model_and_critics_are_selectable() {
     assert!(labels[1].contains("3× same as primary"), "{labels:?}");
 
     // Change critics to another model, then back to "same as primary".
-    press(&mut app, KeyCode::Up).await; // Done → Count
+    press(&mut app, KeyCode::Up).await; // Done → Review
+    press(&mut app, KeyCode::Up).await; // → Count
     press(&mut app, KeyCode::Up).await; // → Critics
     press(&mut app, KeyCode::Enter).await;
     assert_eq!(picker(&app).items[0].0, "same");
@@ -438,8 +477,9 @@ async fn critique_defaults_to_primary_model_and_critics_are_selectable() {
         app.critic.as_ref().unwrap().model.as_deref(),
         Some("mock-deep")
     );
-    press(&mut app, KeyCode::Up).await;
-    press(&mut app, KeyCode::Up).await;
+    for _ in 0..3 {
+        press(&mut app, KeyCode::Up).await; // Done → Critics
+    }
     press(&mut app, KeyCode::Enter).await;
     for _ in 0..5 {
         press(&mut app, KeyCode::Up).await; // to "same", the first row
@@ -465,7 +505,7 @@ async fn critique_defaults_to_primary_model_and_critics_are_selectable() {
     assert_eq!(critics, 3);
     let s = screen(&app);
     assert!(
-        s.contains("2 finding(s) sent back for revision (4 duplicates merged)"),
+        s.contains("2 finding(s), sent back for revision (4 duplicates merged)"),
         "{s}"
     );
     assert!(s.contains("critique (3× same as primary)"), "{s}");
@@ -481,7 +521,11 @@ async fn bare_slash_commands_open_their_menus() {
         ("/fallback", PickKind::Lab, "fallback › lab"),
         ("/critics", PickKind::Lab, "critics › lab"),
         ("/model", PickKind::Lab, "lab"),
-        ("/profile", PickKind::Profile, "profile (new sessions)"),
+        (
+            "/profile",
+            PickKind::Profile,
+            "permissions (Shift+Tab cycles)",
+        ),
     ] {
         // Through the slash menu, as a user would: type, then Enter on the match.
         type_text(&mut app, cmd).await;
@@ -559,6 +603,48 @@ async fn supervisor_pane_scrolls_on_its_own() {
     app.handle(key(KeyCode::PageDown, KeyModifiers::ALT)).await;
     app.handle(key(KeyCode::PageDown, KeyModifiers::ALT)).await;
     assert_eq!(app.scroll_sup, 0);
+}
+
+#[tokio::test]
+async fn wheel_scrolls_transcript_without_overscrolling() {
+    let (mut app, _rx) = app();
+    for i in 0..60 {
+        app.transcript
+            .push(Entry::Feed(Level::Info, format!("line {i}")));
+    }
+    screen(&app); // a draw records how far up the transcript goes
+    let max = app.max_scroll.get();
+    assert!(max > 0);
+    app.handle(mouse(MouseEventKind::ScrollUp, 0, 0)).await;
+    assert_eq!(app.scroll, 3);
+    for _ in 0..100 {
+        app.handle(mouse(MouseEventKind::ScrollUp, 0, 0)).await;
+    }
+    assert_eq!(app.scroll, max, "stops at the top");
+    app.handle(mouse(MouseEventKind::ScrollDown, 0, 0)).await;
+    assert_eq!(app.scroll, max - 3, "first tick down moves right away");
+}
+
+fn mouse(kind: MouseEventKind, column: u16, row: u16) -> Msg {
+    Msg::Mouse(MouseEvent {
+        kind,
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    })
+}
+
+#[test]
+fn selection_reads_back_screen_text() {
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::{Position, Rect};
+    let mut buf = Buffer::empty(Rect::new(0, 0, 10, 3));
+    buf.set_string(0, 0, "hello  ", Style::default());
+    buf.set_string(0, 1, "中文 ok", Style::default());
+    buf.set_string(0, 2, "tail", Style::default());
+    // Dragged backwards, from row 2 col 1 to row 0 col 2: rows in between are whole.
+    let t = ui::selected_text(&buf, Position::new(1, 2), Position::new(2, 0));
+    assert_eq!(t, "llo\n中文 ok\nta");
 }
 
 #[tokio::test]
@@ -661,6 +747,7 @@ async fn split_pane_flips_and_zooms() {
         "review 1 (src/lib.rs changed): 2 critic(s)".into(),
     ));
     app.transcript.push(Entry::User("price the bond".into()));
+    app.prompts.push(("price the bond".into(), "you"));
     let s = screen(&app);
     assert!(s.contains("review 1") && s.contains("› price the bond"));
     app.handle(key(KeyCode::Char('z'), KeyModifiers::CONTROL))
@@ -673,8 +760,10 @@ async fn split_pane_flips_and_zooms() {
     app.handle(key(KeyCode::Char('z'), KeyModifiers::CONTROL))
         .await;
     let s = screen(&app);
+    // Below the pinned prompt strip (one prompt + divider).
+    let below: String = s.lines().skip(2).collect::<Vec<_>>().join("\n");
     assert!(
-        !s.contains("› price the bond") && s.contains("review 1"),
+        !below.contains("› price the bond") && s.contains("review 1"),
         "zoomed on supervisor"
     );
     app.handle(key(KeyCode::Char('z'), KeyModifiers::CONTROL))
@@ -972,8 +1061,8 @@ async fn splash_keeps_the_mark_in_a_small_window() {
     let (mut app, _rx) = app();
     app.handle(key(KeyCode::Char('l'), KeyModifiers::CONTROL))
         .await;
-    // 55x25 with the lab picker open: the small mark and the name.
-    let s = screen_sized(&app, 55, 25);
+    // 55x26 with the lab picker open: the small mark and the name.
+    let s = screen_sized(&app, 55, 26);
     assert!(s.contains("J O C K E Y") && s.contains("@#"), "{s}");
     // Too short for any mark: the text alone.
     let s = screen_sized(&app, 55, 16);
@@ -991,4 +1080,115 @@ async fn home_screen_shows_an_available_update() {
     .await;
     let s = screen(&app);
     assert!(s.contains("jockey 9.0.0 is available") && s.contains("brew upgrade jockey"));
+}
+
+#[tokio::test]
+async fn critique_gate_picks_one_critic_and_esc_defers() {
+    let (mut app, _rx) = app();
+    let critics = vec![
+        ("critic-1".to_string(), "correctness".to_string(), 2),
+        ("critic-2".to_string(), "security".to_string(), 1),
+    ];
+    let (tx, mut rx) = tokio::sync::oneshot::channel();
+    app.handle(Msg::Gate(critics, tx)).await;
+    assert!(screen(&app).contains("Only critic-2 (security)"));
+    press(&mut app, KeyCode::Esc).await; // decide later
+    assert!(app.popup.is_none() && screen(&app).contains("waiting for your pick"));
+    assert!(rx.try_recv().is_err(), "Esc doesn't answer");
+    app.handle(key(KeyCode::Char('s'), KeyModifiers::CONTROL))
+        .await;
+    press(&mut app, KeyCode::Down).await; // All → critic-1
+    press(&mut app, KeyCode::Down).await; // → critic-2
+    press(&mut app, KeyCode::Enter).await;
+    assert_eq!(rx.await.unwrap(), vec!["critic-2".to_string()]);
+    assert!(app.gate.is_none());
+}
+
+#[tokio::test]
+async fn cursor_sits_right_after_the_typed_text() {
+    let (mut app, _rx) = app();
+    type_text(&mut app, "abc").await;
+    let mut t = Terminal::new(TestBackend::new(40, 20)).unwrap();
+    t.draw(|f| ui::draw(f, &app)).unwrap();
+    let pos = t.get_cursor_position().unwrap();
+    let row: String = (0..3)
+        .map(|x| t.backend().buffer()[(x, pos.y)].symbol().to_string())
+        .collect();
+    assert_eq!((row.as_str(), pos.x), ("abc", 3));
+}
+
+#[tokio::test]
+async fn last_five_prompts_are_pinned_on_top() {
+    let (mut app, _rx) = app();
+    for i in 1..=5 {
+        app.prompts
+            .push((format!("prompt {i}\nsecond line"), "you"));
+    }
+    app.prompts.push(("use f64".into(), "steer"));
+    app.prompts.push(("after ls".into(), "you + !cmd"));
+    let s = screen(&app);
+    let top: Vec<&str> = s.lines().take(5).map(str::trim_end).collect();
+    assert_eq!(
+        top,
+        [
+            "you › prompt 3 second line",
+            "you › prompt 4 second line",
+            "you › prompt 5 second line",
+            "steer › use f64",
+            "you + !cmd › after ls"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn pinned_lines_are_colored_by_sender() {
+    use ratatui::style::Color;
+    let (mut app, _rx) = app();
+    for kind in ["you", "steer", "critic"] {
+        app.prompts.push(("hello".into(), kind));
+    }
+    let mut t = Terminal::new(TestBackend::new(40, 30)).unwrap();
+    t.draw(|f| ui::draw(f, &app)).unwrap();
+    let buf = t.backend().buffer();
+    // The message text (last column of "hello") takes its sender's color.
+    let colors: Vec<Color> = (0..3u16)
+        .map(|y| {
+            let x = buf.content[(y as usize) * 40..(y as usize + 1) * 40]
+                .iter()
+                .rposition(|c| c.symbol() == "o")
+                .unwrap() as u16;
+            buf[(x, y)].fg
+        })
+        .collect();
+    assert!(colors[0] != colors[1] && colors[1] != colors[2] && colors[0] != colors[2]);
+    assert_eq!(
+        colors[2],
+        super::theme::rider(),
+        "critics are rose, as elsewhere"
+    );
+}
+
+#[tokio::test]
+async fn refused_profile_reverts_and_is_skipped_by_shift_tab() {
+    use crate::security::Profile;
+    let (mut app, _rx) = app();
+    app.command("/profile yolo").await;
+    // The live session (e.g. Claude, or Grok in auto) refuses read-only.
+    app.handle(Msg::ProfileRefused(
+        Profile::Full,
+        Profile::ReadOnly,
+        "set at launch".into(),
+    ))
+    .await;
+    assert_eq!(
+        app.profile,
+        Profile::Full,
+        "shows what the session really runs"
+    );
+    app.handle(key(KeyCode::BackTab, KeyModifiers::SHIFT)).await;
+    assert_eq!(
+        app.profile,
+        Profile::WorkspaceWrite,
+        "skips the refused read-only"
+    );
 }

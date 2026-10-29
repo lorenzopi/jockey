@@ -75,7 +75,8 @@ With no default model configured, jockey asks you to pick **lab › model › th
 | Shift+Enter, Ctrl+J | newline |
 | `/` | commands: `/mode` `/model` `/effort` `/profile` `/new` `/history` `/resume` `/review` `/help`, plus provider-native ones |
 | `!cmd` | run a shell command and add its output to your next prompt (`!!` to keep it out) |
-| Ctrl+L · Shift+Tab | lab › model › thinking picker · cycle thinking level |
+| Ctrl+L · Ctrl+Y | lab › model › thinking picker · cycle thinking level |
+| Shift+Tab | cycle permissions: workspace-write › auto › yolo › read-only |
 | Ctrl+O · Ctrl+T · Ctrl+R | tool output and diffs · reasoning summaries · raw provider events |
 | Ctrl+S | autosteer suggestions from critics; Enter sends one to the running agent |
 | Ctrl+\\ · Ctrl+Z | stack or split the panes · zoom one |
@@ -112,7 +113,9 @@ Agent text goes to stdout and activity to stderr, so `jockey run ... > answer.md
 | `read-only` | read | always used for judges and critics |
 | `workspace-write` (default) | edit inside the working folder | anything else asks; headless, it's denied unless allowed in config |
 | `auto` | edit inside the working folder | the provider's own reviewer approves routine actions |
-| `full` | anything | requires `--dangerously-allow-all` every time |
+| `full` (yolo) | anything, never asks | on the command line it needs `--dangerously-allow-all`; in the TUI it's on the Shift+Tab cycle |
+
+In the TUI, Shift+Tab or `/profile` switches the running agent's permissions immediately. Claude switches mid-turn. Codex switches from its next turn. Some switches only apply from the next session (`/new`): leaving Grok's own auto mode, and moving a Claude session into or out of read-only. jockey says so and keeps showing the mode the session really runs in, and Shift+Tab skips those modes until `/new`. The footer shows the current profile, and yolo shows in red.
 
 ## Configuration
 

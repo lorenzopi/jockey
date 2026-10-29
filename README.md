@@ -1,22 +1,6 @@
 <div align="center">
 
-<pre>
-                   .=-
-              -=-==o#o.
-              --ooo=oo  -==
-               -=o=.-#oo###-
-          ...--oo=oo###@###o.
-        .oo-=########@@@o##o-
-    .--=o#==#=#######@@#  =o.
-  -=o#oo@##oo##@#@##@@@#
-  .#@=  -##@@@####@@@@@@.
-   --    .##@@@o#@##@@@#-
-           o##-  ---=#=o#-.
-           .@#      .o   =o.
-           -@-=-    .o    .o.
-            o. --   ==     .=.
-            -.
-</pre>
+<img src="docs/logo.svg" alt="jockey: a racehorse and jockey at full gallop, in ASCII" width="320">
 
 # jockey
 
@@ -46,14 +30,19 @@ Everything runs on the CLIs you already use and are signed in to. jockey never s
 
 You need at least one of `codex`, `claude` or `grok` installed and signed in.
 
-**macOS**, from a clone:
+**macOS** (installs the Xcode command line tools and Rust if they're missing):
 
 ```sh
-gh repo clone lorenzopi/jockey && cd jockey
-./install.sh               # installs Xcode tools and Rust if missing, then jockey
+curl -fsSL https://raw.githubusercontent.com/lorenzopi/jockey/main/install.sh | sh
 ```
 
-**Elsewhere**, with Rust 1.85+: `cargo install --locked --path .`
+**Anywhere**, with Rust 1.85+:
+
+```sh
+cargo install --locked --git https://github.com/lorenzopi/jockey
+```
+
+From a clone, `./install.sh` or `cargo install --locked --path .` does the same.
 
 ```sh
 jockey doctor              # finds the CLIs and checks config and quota (no model usage)
@@ -150,3 +139,7 @@ cargo fmt && cargo clippy --all-targets && cargo test
 ```
 
 The tests use no network and no provider usage: each adapter is tested against recorded protocol traces and in-memory fakes.
+
+## License
+
+[Apache-2.0](LICENSE)

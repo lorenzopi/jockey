@@ -1,14 +1,15 @@
 #!/bin/sh
-# Install jockey on macOS from this checkout: the Xcode command line tools and
-# Rust if they're missing, then the `jockey` binary into ~/.cargo/bin.
+# Install jockey on macOS: the Xcode command line tools and Rust if they're
+# missing, then the `jockey` binary into ~/.cargo/bin. Run it from a checkout,
+# or straight from GitHub:
+#   curl -fsSL https://raw.githubusercontent.com/lorenzopi/jockey/main/install.sh | sh
 set -eu
 
-[ "$(uname)" = Darwin ] || { echo "install.sh is for macOS. Elsewhere: cargo install --locked --path ." >&2; exit 1; }
-cd "$(dirname "$0")"
+[ "$(uname)" = Darwin ] || { echo "install.sh is for macOS. Elsewhere: cargo install --locked --git https://github.com/lorenzopi/jockey" >&2; exit 1; }
 
 if ! xcode-select -p >/dev/null 2>&1; then
     echo "jockey needs the Xcode command line tools (for the linker). Opening the installer;"
-    echo "run ./install.sh again when it finishes."
+    echo "run this installer again when it finishes."
     xcode-select --install
     exit 1
 fi
@@ -30,7 +31,13 @@ if [ "$minor" -lt 85 ]; then
     fi
 fi
 
-cargo install --locked --path .
+# From a checkout, install it; piped from curl, fetch the latest from GitHub.
+dir=$(dirname "$0")
+if grep -qs '^name = "jockey"' "$dir/Cargo.toml"; then
+    cargo install --locked --path "$dir"
+else
+    cargo install --locked --git https://github.com/lorenzopi/jockey
+fi
 
 echo
 echo "Installed $(jockey --version 2>/dev/null || echo jockey) to ~/.cargo/bin"

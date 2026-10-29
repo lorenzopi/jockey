@@ -170,6 +170,51 @@ async fn critic_whose_turn_ends_on_a_denied_tool_gets_one_retry() {
     assert_eq!(errors, vec![None, None, None], "every critic recovered");
 }
 
+#[test]
+fn focus_picks_coding_or_general_critics() {
+    use crate::workflows::shared::NO_CHANGES;
+    let roles = |o: &CritiqueOpts, changes: &str| -> Vec<String> {
+        o.critics_for(changes).into_iter().map(|(_, r)| r).collect()
+    };
+    let auto = opts("mock", CritiqueCfg::default());
+    assert_eq!(
+        roles(&auto, "diff --git a/x"),
+        ["correctness", "security", "performance"]
+    );
+    assert_eq!(
+        roles(&auto, NO_CHANGES),
+        ["accuracy", "completeness", "clarity"]
+    );
+    let coding = opts(
+        "mock",
+        CritiqueCfg {
+            focus: "coding".into(),
+            ..Default::default()
+        },
+    );
+    assert_eq!(roles(&coding, NO_CHANGES)[0], "correctness");
+    let general = opts(
+        "mock",
+        CritiqueCfg {
+            focus: "general".into(),
+            ..Default::default()
+        },
+    );
+    assert_eq!(roles(&general, "diff --git a/x")[0], "accuracy");
+    let explicit = opts(
+        "mock",
+        CritiqueCfg {
+            roles: vec!["style".into()],
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        roles(&explicit, NO_CHANGES),
+        ["style", "style", "style"],
+        "explicit roles win"
+    );
+}
+
 #[tokio::test]
 async fn critics_run_concurrently() {
     // 3 critics on one provider with parallelism 3 should overlap: all three start

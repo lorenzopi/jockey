@@ -466,7 +466,8 @@ async fn critique_defaults_to_primary_model_and_critics_are_selectable() {
     assert!(labels[1].contains("3× same as primary"), "{labels:?}");
 
     // Change critics to another model, then back to "same as primary".
-    press(&mut app, KeyCode::Up).await; // Done → Review
+    press(&mut app, KeyCode::Up).await; // Done → Focus
+    press(&mut app, KeyCode::Up).await; // → Review
     press(&mut app, KeyCode::Up).await; // → Count
     press(&mut app, KeyCode::Up).await; // → Critics
     press(&mut app, KeyCode::Enter).await;
@@ -477,7 +478,7 @@ async fn critique_defaults_to_primary_model_and_critics_are_selectable() {
         app.critic.as_ref().unwrap().model.as_deref(),
         Some("mock-deep")
     );
-    for _ in 0..3 {
+    for _ in 0..4 {
         press(&mut app, KeyCode::Up).await; // Done → Critics
     }
     press(&mut app, KeyCode::Enter).await;
@@ -1190,5 +1191,75 @@ async fn refused_profile_reverts_and_is_skipped_by_shift_tab() {
         app.profile,
         Profile::WorkspaceWrite,
         "skips the refused read-only"
+    );
+}
+
+#[tokio::test]
+async fn focus_and_review_are_submenus_that_return_to_their_row() {
+    let (mut app, _rx) = app();
+    app.agent = "mock".parse().unwrap();
+    app.set_mode("critique").await;
+    let at = |app: &App| {
+        let pk = picker(app);
+        (pk.kind, pk.items[pk.selected].0.clone())
+    };
+    let row = picker(&app)
+        .items
+        .iter()
+        .position(|(v, _)| v == "focus")
+        .unwrap();
+    if let Some(Popup::Picker(pk)) = &mut app.popup {
+        pk.selected = row;
+    }
+    press(&mut app, KeyCode::Enter).await;
+    assert_eq!(
+        at(&app),
+        (PickKind::Focus, "auto".into()),
+        "opens on the current choice"
+    );
+    press(&mut app, KeyCode::Down).await;
+    press(&mut app, KeyCode::Down).await;
+    press(&mut app, KeyCode::Enter).await;
+    assert_eq!(app.cfg.critique.focus, "general");
+    assert_eq!(
+        at(&app),
+        (PickKind::Role, "focus".into()),
+        "back on the Focus row"
+    );
+
+    press(&mut app, KeyCode::Up).await; // Review
+    press(&mut app, KeyCode::Enter).await;
+    assert_eq!(at(&app).0, PickKind::Review);
+    press(&mut app, KeyCode::Backspace).await; // back without choosing
+    assert_eq!(
+        at(&app),
+        (PickKind::Role, "ask".into()),
+        "back on the Review row"
+    );
+    press(&mut app, KeyCode::Enter).await;
+    press(&mut app, KeyCode::Down).await;
+    press(&mut app, KeyCode::Enter).await;
+    assert!(app.cfg.critique.ask);
+    assert_eq!(at(&app), (PickKind::Role, "ask".into()));
+}
+
+#[tokio::test]
+async fn split_panes_stack_in_a_narrow_window() {
+    let (mut app, _rx) = app();
+    app.mode = "critique".into();
+    app.transcript
+        .push(Entry::Feed(Level::Info, "review 1: 3 critic(s)".into()));
+    app.transcript.push(Entry::User("price the bond".into()));
+    let row_of = |s: &str, needle: &str| s.lines().position(|l| l.contains(needle)).unwrap();
+    let s = screen_sized(&app, 160, 40);
+    assert_eq!(
+        row_of(&s, "primary ·"),
+        row_of(&s, "supervisor ·"),
+        "side by side"
+    );
+    let s = screen_sized(&app, 90, 40);
+    assert!(
+        row_of(&s, "supervisor ·") > row_of(&s, "primary ·"),
+        "stacked: {s}"
     );
 }

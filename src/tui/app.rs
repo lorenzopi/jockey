@@ -184,6 +184,10 @@ pub enum PickKind {
     Suggestion,
     /// Which critics' findings go back to the primary (critique with `ask`).
     Gate,
+    /// Critique setup: findings go back automatically, or ask me first.
+    Review,
+    /// Critique setup: coding, general or auto critic focus.
+    Focus,
     /// Which role of a multi-model mode to (re)assign.
     Role,
     Lab,
@@ -1647,6 +1651,10 @@ impl App {
                     PickKind::Effort => self.open_model_picker(&pk.provider, &pk.role),
                     PickKind::Model => self.open_lab_picker(&pk.role),
                     PickKind::Lab if self.mode != "single" => self.open_role_menu(),
+                    PickKind::Count if self.mode != "single" => self.reopen_role_menu_on("count"),
+                    PickKind::Policy if self.mode != "single" => self.reopen_role_menu_on("policy"),
+                    PickKind::Review => self.reopen_role_menu_on("ask"),
+                    PickKind::Focus => self.reopen_role_menu_on("focus"),
                     _ => self.popup = Some(Popup::Picker(pk)),
                 },
                 KeyCode::Backspace => {
@@ -1782,11 +1790,11 @@ impl App {
                 ));
                 items.push((
                     "ask".into(),
-                    if self.cfg.critique.ask {
-                        "Review    ask me which critics to send · Enter for automatic".into()
-                    } else {
-                        "Review    findings go straight back · Enter to ask me first".into()
-                    },
+                    format!("Review    {}", review_label(self.cfg.critique.ask)),
+                ));
+                items.push((
+                    "focus".into(),
+                    format!("Focus     {}", focus_label(&self.cfg.critique.focus)),
                 ));
             }
             "autosteer" => {
@@ -1825,6 +1833,16 @@ impl App {
                 .iter()
                 .position(|(_, l)| l.ends_with("choose…"))
                 .unwrap_or(pk.items.len() - 1);
+        }
+    }
+
+    /// After toggling a row in place: stay on it, so Enter keeps cycling it.
+    fn reopen_role_menu_on(&mut self, row: &str) {
+        self.open_role_menu();
+        if let Some(Popup::Picker(pk)) = &mut self.popup
+            && let Some(i) = pk.items.iter().position(|(v, _)| v == row)
+        {
+            pk.selected = i;
         }
     }
 
@@ -1947,6 +1965,8 @@ impl App {
         let items: Vec<(String, String)> = match kind {
             PickKind::Mode => return self.open_mode_picker(),
             PickKind::Policy => return self.open_policy_picker(),
+            PickKind::Review => return self.open_review_picker(),
+            PickKind::Focus => return self.open_focus_picker(),
             PickKind::Suggestion => return self.open_suggestions(),
             PickKind::Gate => return self.open_gate(),
             PickKind::Count => return self.open_role_menu(),
@@ -2026,11 +2046,13 @@ impl App {
                     return self.open_policy_picker();
                 }
                 if v == "ask" {
-                    self.cfg.critique.ask = !self.cfg.critique.ask;
-                    return self.open_role_menu();
+                    return self.open_review_picker();
+                }
+                if v == "focus" {
+                    return self.open_focus_picker();
                 }
                 if v == "fallback" && self.fallback.take().is_some() {
-                    return self.open_role_menu();
+                    return self.reopen_role_menu_on(&v);
                 }
                 if v == "count" {
                     let items = (1..=4)
@@ -2092,7 +2114,7 @@ impl App {
                     self.policy = p;
                 }
                 if self.mode == "autosteer" {
-                    self.open_role_menu();
+                    self.reopen_role_menu_on("policy");
                 } else {
                     self.notice(
                         Level::Info,
@@ -2104,7 +2126,15 @@ impl App {
             PickKind::Gate => self.answer_gate(&v),
             PickKind::Count => {
                 self.critic_count = v.parse().ok();
-                self.open_role_menu();
+                self.reopen_role_menu_on("count");
+            }
+            PickKind::Review => {
+                self.cfg.critique.ask = v == "ask";
+                self.reopen_role_menu_on("ask");
+            }
+            PickKind::Focus => {
+                self.cfg.critique.focus = v;
+                self.reopen_role_menu_on("focus");
             }
         }
     }
@@ -2125,6 +2155,42 @@ impl App {
             items,
         );
         let current = self.policy.as_str();
+        if let Some(Popup::Picker(pk)) = &mut self.popup {
+            pk.selected = pk.items.iter().position(|(v, _)| v == current).unwrap_or(0);
+        }
+    }
+
+    fn open_review_picker(&mut self) {
+        let items = [false, true]
+            .iter()
+            .map(|ask| {
+                let v = if *ask { "ask" } else { "auto" };
+                (v.to_string(), review_label(*ask).to_string())
+            })
+            .collect();
+        let current = if self.cfg.critique.ask { "ask" } else { "auto" };
+        self.show_setup_picker(PickKind::Review, "critique › review", items, current);
+    }
+
+    fn open_focus_picker(&mut self) {
+        let items = ["auto", "coding", "general"]
+            .iter()
+            .map(|f| (f.to_string(), focus_label(f).to_string()))
+            .collect();
+        let current = self.cfg.critique.focus.clone();
+        self.show_setup_picker(PickKind::Focus, "critique › focus", items, &current);
+    }
+
+    /// A setup submenu, starting on the current choice.
+    fn show_setup_picker(
+        &mut self,
+        kind: PickKind,
+        title: &str,
+        items: Vec<(String, String)>,
+        current: &str,
+    ) {
+        let pr = self.agent.provider.clone();
+        self.show_picker(kind, title.into(), &pr, None, "primary", items);
         if let Some(Popup::Picker(pk)) = &mut self.popup {
             pk.selected = pk.items.iter().position(|(v, _)| v == current).unwrap_or(0);
         }
@@ -3017,6 +3083,22 @@ fn pbcopy(text: &str) -> bool {
             c.wait()
         })
         .is_ok_and(|s| s.success())
+}
+
+fn review_label(ask: bool) -> &'static str {
+    if ask {
+        "ask me · you pick whose findings go back"
+    } else {
+        "automatic · findings go straight back"
+    }
+}
+
+fn focus_label(focus: &str) -> &'static str {
+    match focus {
+        "coding" => "coding · correctness, security, performance",
+        "general" => "general · accuracy, completeness, clarity",
+        _ => "auto · coding when files change, else general",
+    }
 }
 
 fn cfg_spec(s: &Option<String>) -> Option<AgentSpec> {

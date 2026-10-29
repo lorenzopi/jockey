@@ -64,7 +64,7 @@ primary draft ─► critics in parallel (each its own focus) ─► merge + ran
 
 1. **Primary** drafts in the real workspace and keeps one session throughout.
 2. **Workspace.** Critics read the real workspace in read-only mode; the primary has finished, so they all see the same state. If nothing changed, they get an empty folder instead.
-3. **Critics** run concurrently, at most `max_parallel_per_provider` at a time per provider. Each critic is a read-only reviewer with a focus role: `correctness`, `security` or `performance`, cycled by default. Each must reply with:
+3. **Critics** run concurrently, at most `max_parallel_per_provider` at a time per provider. Each critic is a read-only reviewer with a focus role, cycled across critics. The `focus` setting picks the set: **coding** (`correctness`, `security`, `performance`) or **general** (`accuracy`, `completeness`, `clarity`). The default, **auto**, uses coding when the agent changed files and general otherwise, so a question or plan isn't reviewed for SQL injection. Set `roles` explicitly to override both. In the TUI, the setup menu's Focus row switches between them. Each must reply with:
    ```json
    {"findings": [{"severity": "critical|high|medium|low", "confidence": 0.0-1.0, "description": "...", "evidence": "...", "proposed_fix": "...", "file": "path", "line": 12}]}
    ```
@@ -88,7 +88,8 @@ jockey run --mode critique --agent codex --critics claude:haiku,grok:grok-4.6@lo
 [critique]
 critics = []            # empty = `count` × the primary's model
 count = 3
-roles = ["correctness", "security", "performance"]
+focus = "auto"          # auto | coding | general
+roles = []              # explicit roles override focus
 revisions = 1
 checks = ["cargo test"]
 max_parallel_per_provider = 3

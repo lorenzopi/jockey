@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>jockey: one saddle, many coding agents</title>
+<meta name="description" content="A terminal app that rides the official coding-agent CLIs and makes them work together. One agent works while others check, judge and steer it.">
+<link rel="icon" href="logo.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&display=swap" rel="stylesheet">
+<style>
+  :root {
+    color-scheme: dark;
+    --night: #141a22;      /* the stable at night */
+    --stall: #1c242e;      /* panels */
+    --rail: #34404d;       /* rules and borders */
+    --chalk: #e8e3da;      /* text */
+    --dust: #a39e96;       /* secondary text */
+    --amber: #ffb05c;      /* silks */
+    --rose: #de78a0;       /* silks, the critics' color in the app */
+    --serif: "Newsreader", Georgia, serif;
+    --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--night);
+    color: var(--chalk);
+    font: 400 1.1875rem/1.62 var(--serif);
+    font-optical-sizing: auto;
+    -webkit-font-smoothing: antialiased;
+  }
+  img { display: block; max-width: 100%; height: auto; }
+  a { color: var(--amber); text-underline-offset: 0.18em; text-decoration-thickness: 1px; }
+  a:hover { color: var(--chalk); }
+  :focus-visible { outline: 2px solid var(--amber); outline-offset: 3px; border-radius: 2px; }
+  code { font: 0.86em var(--mono); color: var(--chalk); }
+
+  .wrap { width: min(100% - 2.5rem, 68rem); margin-inline: auto; }
+
+  /* Header */
+  .top { display: flex; align-items: center; justify-content: space-between; padding-block: 1.5rem; }
+  .brand { display: flex; align-items: center; gap: 0.6rem; color: var(--chalk); text-decoration: none; font: 500 1.05rem var(--mono); }
+  .brand img { width: 2rem; }
+  .top nav { display: flex; gap: 1.5rem; font: 0.95rem var(--mono); }
+  .top nav a { color: var(--dust); text-decoration: none; }
+  .top nav a:hover { color: var(--chalk); }
+
+  /* Hero */
+  .hero > div { min-width: 0; }
+  .hero { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 3rem; align-items: center; padding-block: 3.5rem 2rem; }
+  .hero h1 { font: 500 clamp(2.6rem, 6vw, 4.4rem)/1.04 var(--serif); letter-spacing: -0.015em; max-width: 13ch; }
+  .hero .lede { margin-top: 1.4rem; max-width: 34rem; color: var(--dust); font-size: 1.3rem; line-height: 1.5; }
+  .hero .horse { width: clamp(13rem, 26vw, 20rem); }
+
+  /* The race rail: the jockey gallops from the gate to the flag once. */
+  .rail { position: relative; height: 2.6rem; margin-top: 1rem; }
+  .rail::before {
+    content: ""; position: absolute; left: 0; right: 2rem; top: 1.3rem;
+    border-top: 1px dashed var(--rail);
+  }
+  .rail .post { position: absolute; top: 0.95rem; width: 1px; height: 0.7rem; background: var(--rail); }
+  .rail .flag { position: absolute; right: 0; top: 0.35rem; font-size: 1.4rem; }
+  .rail .rider {
+    position: absolute; top: 0.2rem; left: 0; font-size: 1.6rem;
+    animation: gallop 2.6s cubic-bezier(.35,.05,.25,1) 0.4s both;
+  }
+  @keyframes gallop {
+    from { left: 0; }
+    to { left: calc(100% - 4.4rem); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .rail .rider { animation: none; left: calc(100% - 4.4rem); }
+  }
+
+  /* Install */
+  .install { margin-top: 2.2rem; max-width: 46rem; }
+  .tabs { display: flex; gap: 0.25rem; }
+  .tabs button {
+    font: 0.9rem var(--mono); color: var(--dust); background: none; cursor: pointer;
+    border: 1px solid transparent; border-bottom: none; padding: 0.45rem 0.9rem; border-radius: 6px 6px 0 0;
+  }
+  .tabs button[aria-selected="true"] { color: var(--chalk); background: var(--stall); border-color: var(--rail); }
+  .cmd {
+    display: flex; align-items: center; gap: 1rem; background: var(--stall);
+    border: 1px solid var(--rail); border-radius: 0 6px 6px 6px; padding: 0.95rem 1rem 0.95rem 1.2rem;
+  }
+  .cmd pre { flex: 1; min-width: 0; overflow-x: auto; font: 0.95rem/1.5 var(--mono); }
+  .cmd pre::before { content: "$ "; color: var(--dust); }
+  .copy {
+    font: 0.85rem var(--mono); color: var(--dust); background: none; cursor: pointer;
+    border: 1px solid var(--rail); border-radius: 4px; padding: 0.3rem 0.7rem;
+  }
+  .copy:hover { color: var(--chalk); border-color: var(--dust); }
+  .needs { margin-top: 0.8rem; color: var(--dust); font-size: 1rem; }
+
+  /* Sections */
+  section { padding-block: 4.5rem 1rem; }
+  h2 {
+    font: 500 clamp(1.7rem, 3.4vw, 2.3rem)/1.15 var(--serif); letter-spacing: -0.01em;
+    padding-bottom: 0.9rem; border-bottom: 1px solid var(--rail); margin-bottom: 1.6rem;
+  }
+  h3 { font: 600 1.2rem/1.3 var(--serif); }
+  .prose { max-width: 38rem; }
+  .prose p + p { margin-top: 1rem; }
+
+  .modes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.8rem 3rem; max-width: 56rem; }
+  .modes dt { font: 500 1rem var(--mono); color: var(--amber); }
+  .modes dd { margin-top: 0.3rem; color: var(--chalk); }
+
+  /* A figure beside its text: portrait terminal shots. */
+  .pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 34rem); gap: 3.5rem; align-items: start; }
+  .pair.flip { grid-template-columns: minmax(0, 34rem) minmax(0, 1fr); }
+  /* Tall shots: the text stays beside them while you scroll. */
+  .pair .prose { position: sticky; top: 2rem; }
+  .pair.flip figure { order: -1; }
+  figure img { border-radius: 10px; box-shadow: 0 1.5rem 3rem -1rem rgb(0 0 0 / 0.55); }
+  figcaption { margin-top: 0.8rem; color: var(--dust); font-size: 1rem; line-height: 1.45; }
+
+  .rails { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 2.2rem; }
+  .rails p { margin-top: 0.45rem; color: var(--dust); font-size: 1.05rem; }
+
+  .scroll-x { overflow-x: auto; }
+  table { border-collapse: collapse; margin-top: 2rem; width: 100%; max-width: 44rem; font-size: 1.05rem; }
+  th, td { text-align: left; padding: 0.55rem 1rem 0.55rem 0; border-bottom: 1px solid var(--rail); vertical-align: top; }
+  th { font-weight: 500; color: var(--dust); }
+  td:first-child { white-space: nowrap; }
+
+  .not { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.8rem 3rem; max-width: 56rem; }
+  .not p { margin-top: 0.35rem; color: var(--dust); font-size: 1.05rem; }
+
+  footer {
+    margin-top: 5rem; padding-block: 2rem 3rem; border-top: 1px solid var(--rail);
+    display: flex; flex-wrap: wrap; gap: 1rem 2rem; justify-content: space-between;
+    color: var(--dust); font-size: 0.95rem;
+  }
+
+  @media (max-width: 52rem) {
+    .hero { grid-template-columns: 1fr; padding-top: 1.5rem; }
+    .hero .horse { order: -1; width: 12rem; }
+    .pair, .pair.flip { grid-template-columns: 1fr; gap: 1.8rem; }
+    .pair.flip figure { order: 0; }
+    .modes, .rails, .not { grid-template-columns: 1fr; }
+    .top nav { gap: 1rem; font-size: 0.85rem; }
+    .pair .prose { position: static; }
+    td:first-child { white-space: normal; }
+    .tabs button { padding-inline: 0.6rem; }
+  }
+</style>
+</head>
+<body>
+
+<header class="wrap top">
+  <a class="brand" href="#"><img src="logo.svg" alt="">jockey</a>
+  <nav>
+    <a href="#install">Install</a>
+    <a href="https://github.com/lorenzopi/jockey/tree/main/docs">Docs</a>
+    <a href="https://github.com/lorenzopi/jockey">GitHub</a>
+  </nav>
+</header>
+
+<main class="wrap">
+
+  <div class="hero">
+    <div>
+      <h1>One saddle, many coding agents.</h1>
+      <p class="lede">jockey rides the coding-agent CLIs you already use and makes them work together. One agent works while others check, judge and steer it.</p>
+    </div>
+    <img class="horse" src="logo.svg" alt="A racehorse and jockey at full gallop, drawn in ASCII">
+  </div>
+
+  <div class="rail" aria-hidden="true">
+    <span class="post" style="left:20%"></span><span class="post" style="left:40%"></span>
+    <span class="post" style="left:60%"></span><span class="post" style="left:80%"></span>
+    <span class="rider">🏇</span><span class="flag">🏁</span>
+  </div>
+
+  <div class="install" id="install">
+    <div class="tabs" role="tablist" aria-label="Install with">
+      <button role="tab" aria-selected="true" data-cmd="brew install lorenzopi/tap/jockey">Homebrew</button>
+      <button role="tab" aria-selected="false" data-cmd="curl -fsSL https://raw.githubusercontent.com/lorenzopi/jockey/main/install.sh | sh">macOS script</button>
+      <button role="tab" aria-selected="false" data-cmd="cargo install --locked --git https://github.com/lorenzopi/jockey">Cargo</button>
+    </div>
+    <div class="cmd" role="tabpanel">
+      <pre id="cmd">brew install lorenzopi/tap/jockey</pre>
+      <button class="copy" id="copy" type="button">Copy</button>
+    </div>
+    <p class="needs">Needs at least one of <code>codex</code>, <code>claude</code> or <code>grok</code>, installed and signed in. Then run <code>jockey</code> in a project folder.</p>
+  </div>
+
+  <section>
+    <h2>Four ways to ride</h2>
+    <dl class="modes">
+      <div><dt>single</dt><dd>One agent, one conversation. Type while it works to steer it.</dd></div>
+      <div><dt>cascade</dt><dd>The agent attempts, your checks run, a judge reviews. Rejected work retries with the feedback.</dd></div>
+      <div><dt>critique</dt><dd>The agent drafts, critics review in parallel, and the agent revises with their findings.</dd></div>
+      <div><dt>autosteer</dt><dd>Critics watch the agent while it works and correct it mid-turn.</dd></div>
+    </dl>
+  </section>
+
+  <section class="pair">
+    <div class="prose">
+      <h2>Critics you can overrule</h2>
+      <p>In critique mode, three critics review the same snapshot of the draft at once. Each has a focus: correctness, security and performance for code; accuracy, completeness and clarity for everything else.</p>
+      <p>Their findings are merged and ranked. You can send all of them back, one critic's, or none.</p>
+    </div>
+    <figure>
+      <img src="screenshots/critique.gif" width="720" height="920" alt="A prompt is typed in critique mode, the agent works, three critics report, a menu asks which findings to send back, and the agent revises">
+      <figcaption>Critique mode, start to finish.</figcaption>
+    </figure>
+  </section>
+
+  <section class="pair flip">
+    <div class="prose">
+      <h2>Steer while it works</h2>
+      <p>The agent's plan, tool calls and edits stream in as it goes. Press Enter mid-turn to correct it, or Alt+Enter to queue what's next.</p>
+      <p>Your last prompts and steers stay pinned on top, so you always know what you asked.</p>
+    </div>
+    <figure>
+      <img src="screenshots/single.png" width="900" height="1150" alt="Single mode: the prompt pinned on top, the agent's plan, tool calls and a file edit, and the permission line at the bottom">
+      <figcaption>Single mode with one agent.</figcaption>
+    </figure>
+  </section>
+
+  <section class="pair">
+    <div class="prose">
+      <h2>See every finding</h2>
+      <p>Multi-agent modes split the screen: the agent on top, the critics' reviews below. Each finding shows its severity, confidence, location and which critics reported it.</p>
+      <p>Ctrl+Z zooms into either pane. Ctrl+O shows the evidence and proposed fix.</p>
+    </div>
+    <figure>
+      <img src="screenshots/critique.png" width="900" height="1150" alt="Critique mode after the revision: the revised answer above and the critics' merged, ranked findings below">
+      <figcaption>After a critique: the revision above, the findings below.</figcaption>
+    </figure>
+  </section>
+
+  <section class="pair flip">
+    <div class="prose">
+      <h2>One menu per mode</h2>
+      <p>Ctrl+L opens a mode's setup: which model is primary, which models critique, how many, and whether to pause for your call after each review.</p>
+      <p>Models and thinking levels come live from each CLI. Your picks are saved as defaults.</p>
+    </div>
+    <figure>
+      <img src="screenshots/critique-setup.png" width="900" height="1150" alt="The critique setup menu: primary, critics, count, review and focus">
+      <figcaption>Critique setup.</figcaption>
+    </figure>
+  </section>
+
+  <section>
+    <h2>Safety rails</h2>
+    <div class="rails">
+      <div><h3>No surprise bills</h3><p>jockey won't run past your subscription into paid credits unless you allow it.</p></div>
+      <div><h3>Reviewers can't write</h3><p>Judges and critics always run read-only, in a snapshot of the workspace.</p></div>
+      <div><h3>Critics can't widen permissions</h3><p>Advice to bypass permissions, use <code>sudo</code> or add API keys is rejected.</p></div>
+    </div>
+    <div class="scroll-x"><table>
+      <thead><tr><th>Permission mode</th><th>The agent may</th></tr></thead>
+      <tbody>
+        <tr><td><code>read-only</code></td><td>read</td></tr>
+        <tr><td><code>workspace-write</code></td><td>edit the project folder; anything else asks you</td></tr>
+        <tr><td><code>auto</code></td><td>the same, with the provider's own reviewer approving routine actions</td></tr>
+        <tr><td><code>yolo</code></td><td>anything, without asking</td></tr>
+      </tbody>
+    </table></div>
+    <p class="prose" style="margin-top:1rem;color:var(--dust);font-size:1.05rem">Shift+Tab switches the running agent between them.</p>
+  </section>
+
+  <section>
+    <h2>What jockey doesn't do</h2>
+    <div class="not">
+      <div><h3>Hold your keys</h3><p>It drives the CLIs you're signed in to. It never sees credentials and never uses API keys.</p></div>
+      <div><h3>Bring its own model</h3><p>Every answer comes from Codex, Claude or Grok, through their official CLIs.</p></div>
+      <div><h3>Run a service</h3><p>No account and no server of its own. Runs are saved on your machine, with credentials masked; the only call out is a check for new versions.</p></div>
+      <div><h3>Undo for you</h3><p>Stopping an agent stops it and everything it started. File changes stay; use git.</p></div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="wrap">
+  <span>MIT licensed. Made by <a href="https://github.com/lorenzopi">lorenzopi</a>.</span>
+  <span>Screenshots are from demo mode: the models named are played by jockey's scripted mock agent.</span>
+</footer>
+
+<script>
+  const cmd = document.getElementById("cmd");
+  const copy = document.getElementById("copy");
+  for (const tab of document.querySelectorAll('[role="tab"]')) {
+    tab.addEventListener("click", () => {
+      for (const t of document.querySelectorAll('[role="tab"]')) t.setAttribute("aria-selected", t === tab);
+      cmd.textContent = tab.dataset.cmd;
+      copy.textContent = "Copy";
+    });
+  }
+  copy.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(cmd.textContent);
+      copy.textContent = "Copied";
+    } catch {
+      copy.textContent = "Select and copy";
+    }
+  });
+</script>
+</body>
+</html>

@@ -30,6 +30,15 @@ fn pick(rgb: (u8, u8, u8), basic: Color) -> Color {
 pub fn accent() -> Color {
     pick((255, 176, 92), Color::Yellow)
 }
+/// Selected row in menus: amber at about a third strength over a dark
+/// background (a "translucent" highlight), with light amber text on it.
+/// Without truecolor: black on yellow.
+pub fn highlight_bg() -> Color {
+    pick((92, 66, 38), Color::Yellow)
+}
+pub fn highlight_fg() -> Color {
+    pick((255, 228, 176), Color::Black)
+}
 /// Lighter amber for the shimmer's highlight.
 pub fn accent_hi() -> Color {
     pick((255, 228, 176), Color::White)

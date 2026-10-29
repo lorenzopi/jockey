@@ -227,8 +227,8 @@ fn draw_split(f: &mut Frame, app: &App, area: Rect) {
         Zoom::Supervisor => return draw_transcript(f, app, area, Pane::Supervisor),
         Zoom::None => {}
     }
-    // Side by side by default; Ctrl+\ stacks them.
-    let wide = !app.split_flip;
+    // Side by side when there's room, stacked in a narrow window; Ctrl+\ flips it.
+    let wide = (area.width >= 120) != app.split_flip;
     let [left, right] = if wide {
         Layout::horizontal([Constraint::Percentage(60), Constraint::Percentage(40)]).areas(area)
     } else {
@@ -639,7 +639,7 @@ fn splash(app: &App, height: u16) -> Vec<Line<'static>> {
         Span::styled(format!("v{}", env!("CARGO_PKG_VERSION")), dim()),
     ]));
     lines.push(Line::from(Span::styled(
-        format!("  {}", app.cwd.display()),
+        format!("  {}", short_cwd(app)),
         dim(),
     )));
     if let Some(u) = &app.update {
@@ -911,13 +911,18 @@ fn draw_editor(f: &mut Frame, app: &App, area: Rect, rows: Vec<String>, cursor: 
     }
 }
 
-fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
+/// The working folder with the home folder shown as `~`.
+fn short_cwd(app: &App) -> String {
     let home = std::env::var("HOME").unwrap_or_default();
     let cwd = app.cwd.display().to_string();
-    let cwd = match cwd.strip_prefix(&home) {
+    match cwd.strip_prefix(&home) {
         Some(rest) if !home.is_empty() => format!("~{rest}"),
         _ => cwd,
-    };
+    }
+}
+
+fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
+    let cwd = short_cwd(app);
     let model = app.agent_label();
     let left = format!("{cwd} · {} · {model}", app.mode_badge());
     let mut right = vec![];
@@ -1047,7 +1052,10 @@ fn draw_list(f: &mut Frame, area: Rect, title: &str, items: &[(String, String, b
         .take(max)
         .map(|(a, b, s)| {
             let st = if *s {
-                Style::default().fg(Color::Black).bg(theme::accent())
+                Style::default()
+                    .fg(theme::highlight_fg())
+                    .bg(theme::highlight_bg())
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
             };

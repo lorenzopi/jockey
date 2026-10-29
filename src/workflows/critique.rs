@@ -29,9 +29,30 @@ pub struct CritiqueOpts {
     pub max_parallel_per_provider: usize,
     /// Set by the TUI when `[critique] ask` is on.
     pub gate: Option<Gate>,
+    /// "auto", "coding" or "general"; ignored when roles were set explicitly.
+    pub focus: String,
+    pub explicit_roles: bool,
 }
 
 impl CritiqueOpts {
+    /// This round's critics: general focuses for answers that aren't code.
+    fn critics_for(&self, changes: &str) -> Vec<(AgentSpec, String)> {
+        let general = match self.focus.as_str() {
+            "general" => true,
+            "coding" => false,
+            _ => changes == NO_CHANGES,
+        };
+        if self.explicit_roles || !general {
+            return self.critics.clone();
+        }
+        let roles = critics::GENERAL_ROLES;
+        self.critics
+            .iter()
+            .enumerate()
+            .map(|(i, (s, _))| (s.clone(), roles[i % roles.len()].to_string()))
+            .collect()
+    }
+
     /// Critics come from flags, then config; with neither, `count` critics on the primary's model.
     pub fn resolve(cfg: &CritiqueCfg, primary: &AgentSpec, flags: &[AgentSpec]) -> Result<Self> {
         let specs: Vec<AgentSpec> = if !flags.is_empty() {
@@ -63,6 +84,8 @@ impl CritiqueOpts {
             check_timeout: Duration::from_secs(cfg.check_timeout_secs),
             max_parallel_per_provider: cfg.max_parallel_per_provider.max(1),
             gate: None,
+            focus: cfg.focus.clone(),
+            explicit_roles: !cfg.roles.is_empty(),
         })
     }
 }
@@ -85,9 +108,11 @@ pub async fn run(
             break;
         }
         let changes = collect_changes(&mut sub, "primary").await;
-        let mut findings = review(ctx, o, round, task, &outcome.final_text, &changes).await?;
+        let critics = o.critics_for(&changes);
+        let mut findings =
+            review(ctx, o, &critics, round, task, &outcome.final_text, &changes).await?;
         if let Some(gate) = &o.gate {
-            findings = ask(gate, &o.critics, findings).await;
+            findings = ask(gate, &critics, findings).await;
         }
         if findings.is_empty() {
             break;
@@ -150,6 +175,7 @@ async fn ask(gate: &Gate, critics: &[(AgentSpec, String)], findings: Vec<Finding
 async fn review(
     ctx: &RunCtx,
     o: &CritiqueOpts,
+    critics: &[(AgentSpec, String)],
     round: u32,
     task: &str,
     draft: &str,
@@ -165,7 +191,7 @@ async fn review(
     review_round(
         ctx,
         dir.path(),
-        &o.critics,
+        critics,
         o.max_parallel_per_provider,
         round,
         reason,

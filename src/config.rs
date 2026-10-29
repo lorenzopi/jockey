@@ -82,6 +82,10 @@ pub struct Critique {
     pub max_parallel_per_provider: usize,
     /// TUI: pause after each review so you choose which critics' findings go back.
     pub ask: bool,
+    /// Critics' focus when `roles` is empty: "coding" (correctness, security,
+    /// performance), "general" (accuracy, completeness, clarity), or "auto":
+    /// coding when the agent changed files, general otherwise.
+    pub focus: String,
 }
 
 impl Default for Critique {
@@ -89,15 +93,13 @@ impl Default for Critique {
         Self {
             critics: vec![],
             count: 3,
-            roles: crate::critics::DEFAULT_ROLES
-                .iter()
-                .map(|r| r.to_string())
-                .collect(),
+            roles: vec![],
             revisions: 1,
             checks: vec![],
             check_timeout_secs: 600,
             max_parallel_per_provider: 3,
             ask: false,
+            focus: "auto".into(),
         }
     }
 }

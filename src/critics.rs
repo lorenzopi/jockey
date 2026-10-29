@@ -53,12 +53,17 @@ pub struct Finding {
 
 /// Focus areas assigned to critics in order (cycled when there are more critics).
 pub const DEFAULT_ROLES: &[&str] = &["correctness", "security", "performance"];
+/// The same, for answers that aren't code (questions, plans, writing).
+pub const GENERAL_ROLES: &[&str] = &["accuracy", "completeness", "clarity"];
 
 fn focus(role: &str) -> &str {
     match role {
         "correctness" => "bugs, wrong logic, unmet requirements and missing edge cases",
         "security" => "injection, unsafe input handling, leaked secrets and permission problems",
         "performance" => "needless work, poor scaling and structural or architectural problems",
+        "accuracy" => "factual errors, wrong claims and statements the evidence doesn't support",
+        "completeness" => "parts of the request left unanswered, gaps and missing caveats",
+        "clarity" => "confusing structure, ambiguity and anything a reader would likely misread",
         other => other,
     }
 }

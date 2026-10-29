@@ -195,6 +195,12 @@ pub trait AgentSession: Send + Sync {
 }
 
 pub fn adapter(id: &str, cfg: &Config) -> Result<Arc<dyn ProviderAdapter>> {
+    // Demo recordings: real provider names, scripted mock behind them.
+    if std::env::var_os("JOCKEY_DEMO_MOCK").is_some()
+        && let Some(name) = ["codex", "claude", "grok"].into_iter().find(|p| *p == id)
+    {
+        return Ok(Arc::new(mock::Mock::posing_as(name)));
+    }
     let bin = cfg
         .provider(id)
         .path

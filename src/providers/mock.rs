@@ -17,6 +17,19 @@ use tokio::sync::Notify;
 
 pub struct Mock {
     pub delay: Duration,
+    /// "mock", or the provider it poses as for demo recordings.
+    name: &'static str,
+}
+
+impl Mock {
+    /// Shows up as `name` (codex, claude, grok) but is still the scripted mock;
+    /// used for screenshots (`JOCKEY_DEMO_MOCK`), never a real agent.
+    pub fn posing_as(name: &'static str) -> Self {
+        Self {
+            name,
+            ..Self::default()
+        }
+    }
 }
 
 impl Default for Mock {
@@ -27,6 +40,7 @@ impl Default for Mock {
             .unwrap_or(40);
         Self {
             delay: Duration::from_millis(ms),
+            name: "mock",
         }
     }
 }
@@ -34,7 +48,7 @@ impl Default for Mock {
 #[async_trait]
 impl ProviderAdapter for Mock {
     fn id(&self) -> &'static str {
-        "mock"
+        self.name
     }
 
     fn get_capabilities(&self) -> Capabilities {
@@ -55,7 +69,7 @@ impl ProviderAdapter for Mock {
 
     async fn probe(&self) -> Probe {
         Probe {
-            provider: "mock",
+            provider: self.name,
             path: None,
             version: Some("built-in".into()),
             adapter: "mock",
@@ -121,6 +135,7 @@ impl ProviderAdapter for Mock {
         .await;
         Ok(Arc::new(MockSession {
             id,
+            name: self.name,
             role: spec.role,
             weak: model == "mock-weak",
             delay_scale: if model == "mock-slow" { 20 } else { 1 },
@@ -140,6 +155,7 @@ impl ProviderAdapter for Mock {
 
 pub struct MockSession {
     id: String,
+    name: &'static str,
     role: Role,
     /// `mock-weak`: final answers are marked as weak drafts for judges to reject.
     weak: bool,
@@ -336,8 +352,9 @@ impl MockSession {
         let mut findings = vec![
             r#"{"severity": "low", "confidence": 0.6, "description": "Add a doc comment to price", "evidence": "src/lib.rs:1 has no doc comment", "proposed_fix": "Document price()", "file": "src/lib.rs", "line": 1}"#,
         ];
-        if draft.contains("WEAK DRAFT") {
-            findings.push(r#"{"severity": "high", "confidence": 0.9, "description": "The draft skips the edge cases", "evidence": "the draft is marked WEAK DRAFT", "proposed_fix": "Handle empty and negative inputs", "file": "src/lib.rs", "line": 2}"#);
+        let demo_first_draft = self.name != "mock" && !draft.contains("reviewers");
+        if draft.contains("WEAK DRAFT") || demo_first_draft {
+            findings.push(r#"{"severity": "high", "confidence": 0.9, "description": "The draft skips the edge cases", "evidence": "price() has no check for a zero or negative maturity", "proposed_fix": "Handle empty and negative inputs", "file": "src/lib.rs", "line": 2}"#);
         }
         let text = format!("{{\"findings\": [{}]}}", findings.join(", "));
         self.say_once(&text).await?;
@@ -484,7 +501,7 @@ impl MockSession {
 #[async_trait]
 impl AgentSession for MockSession {
     fn provider(&self) -> &'static str {
-        "mock"
+        self.name
     }
 
     fn session_id(&self) -> Option<String> {
@@ -629,11 +646,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn posing_mock_shows_the_real_name_but_stays_scripted() {
+        let (tx, _rx) = mpsc::channel(10_000);
+        let m = Mock {
+            delay: Duration::from_millis(1),
+            ..Mock::posing_as("claude")
+        };
+        assert_eq!(m.id(), "claude");
+        let ev = Emitter::new("r", "claude", "primary", tx);
+        let s = m.start_session(spec(), ev).await.unwrap();
+        assert_eq!(s.provider(), "claude");
+        let out = s.execute("price a bond").await.unwrap();
+        assert_eq!(out.final_text, "Done with \"price a bond\". Tests pass.");
+    }
+
+    #[tokio::test]
     async fn steer_is_acked_then_applied_at_next_boundary() {
         let (tx, mut rx) = mpsc::channel(10_000);
         let ev = Emitter::new("r", "mock", "primary", tx);
         let m = Mock {
             delay: Duration::from_millis(2),
+            ..Mock::default()
         };
         let s = m.start_session(spec(), ev).await.unwrap();
         let s2 = s.clone();
@@ -663,6 +696,7 @@ mod tests {
         let ev = Emitter::new("r", "mock", "primary", tx);
         let s = Mock {
             delay: Duration::from_millis(50),
+            ..Mock::default()
         }
         .start_session(spec(), ev)
         .await

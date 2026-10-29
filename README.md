@@ -44,10 +44,18 @@ Everything runs on the CLIs you already use and are signed in to. jockey never s
 
 ## Quick start
 
-Requires Rust 1.85+ and at least one of `codex`, `claude` or `grok` installed and signed in.
+You need at least one of `codex`, `claude` or `grok` installed and signed in.
+
+**macOS**, from a clone:
 
 ```sh
-cargo install --path .
+gh repo clone lorenzopi/jockey && cd jockey
+./install.sh               # installs Xcode tools and Rust if missing, then jockey
+```
+
+**Elsewhere**, with Rust 1.85+: `cargo install --locked --path .`
+
+```sh
 jockey doctor              # finds the CLIs and checks config and quota (no model usage)
 jockey                     # opens the TUI in the current folder
 jockey --agent mock        # try the UI with a built-in fake agent, no quota spent

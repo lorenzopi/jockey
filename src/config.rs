@@ -179,6 +179,40 @@ pub fn global_path() -> PathBuf {
     home().join("config.toml")
 }
 
+/// Sets `section.key` in the global config, or removes it for `None`, keeping
+/// the file's comments and layout. The TUI saves model choices this way.
+pub fn save_global(section: &str, key: &str, value: Option<&str>) -> Result<()> {
+    std::fs::create_dir_all(home())?;
+    save_key(&global_path(), section, key, value)
+}
+
+fn save_key(path: &Path, section: &str, key: &str, value: Option<&str>) -> Result<()> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e).with_context(|| format!("failed to read {}", path.display())),
+    };
+    let mut doc: toml_edit::DocumentMut = text
+        .parse()
+        .with_context(|| format!("failed to parse {}", path.display()))?;
+    match value {
+        Some(v) => {
+            doc.entry(section)
+                .or_insert(toml_edit::table())
+                .as_table_like_mut()
+                .with_context(|| format!("[{section}] in {} is not a table", path.display()))?
+                .insert(key, toml_edit::value(v));
+        }
+        None => {
+            if let Some(t) = doc.get_mut(section).and_then(|t| t.as_table_like_mut()) {
+                t.remove(key);
+            }
+        }
+    }
+    std::fs::write(path, doc.to_string())
+        .with_context(|| format!("failed to write {}", path.display()))
+}
+
 pub fn project_path(cwd: &Path) -> PathBuf {
     cwd.join(".jockey.toml")
 }
@@ -278,6 +312,22 @@ fn merge(base: &mut toml::Table, over: toml::Table) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saving_a_key_keeps_the_rest_of_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("config.toml");
+        std::fs::write(&p, "# mine\n[defaults]\nmode = \"single\" # keep\n").unwrap();
+        save_key(&p, "defaults", "agent", Some("claude:haiku@low")).unwrap();
+        save_key(&p, "cascade", "fallback", Some("codex")).unwrap();
+        save_key(&p, "cascade", "fallback", None).unwrap();
+        let s = std::fs::read_to_string(&p).unwrap();
+        assert!(s.contains("# mine") && s.contains("mode = \"single\" # keep"));
+        assert!(s.contains("agent = \"claude:haiku@low\""));
+        assert!(!s.contains("fallback"));
+        let t: toml::Table = s.parse().unwrap();
+        assert_eq!(t["defaults"]["agent"].as_str(), Some("claude:haiku@low"));
+    }
 
     #[test]
     fn project_config_cannot_change_privileged_keys() {

@@ -118,9 +118,11 @@ Agent text goes to stdout and activity to stderr, so `jockey run ... > answer.md
 
 `~/.jockey/config.toml`, overlaid by a project's `.jockey.toml`. A repository's file cannot change executable paths, billing or approval rules.
 
+Models you pick in the app are saved here as your defaults (`defaults.agent`, `cascade.judge`, `cascade.fallback`); the rest of the file, comments included, is left as you wrote it.
+
 ```toml
 [defaults]
-agent = "codex:gpt-6.1-sol@medium"   # optional; without it jockey asks at startup
+agent = "codex:gpt-6.1-sol@medium"   # saved when you pick a model; without it jockey asks
 profile = "workspace-write"
 
 [autosteer]

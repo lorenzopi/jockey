@@ -802,10 +802,14 @@ async fn without_a_saved_default_the_tui_asks_for_a_model_first() {
     pick_mock(&mut app, &mut rx, 0).await; // mock-fast@low
     assert!(!app.needs_agent);
     assert_eq!(app.agent.provider, "mock");
+    assert_eq!(
+        app.saved_models()[0].2.as_deref(),
+        Some("mock:mock-fast@low")
+    );
     assert!(
-        app.transcript.iter().any(
-            |e| matches!(e, Entry::Notice(_, t) if t.contains("agent = \"mock:mock-fast@low\""))
-        )
+        app.transcript
+            .iter()
+            .any(|e| matches!(e, Entry::Notice(_, t) if t.contains("saved as your default model")))
     );
     press(&mut app, KeyCode::Enter).await; // send the kept prompt
     pump_until(&mut app, &mut rx, |a| !a.busy() && a.last_answer.is_some()).await;

@@ -2147,10 +2147,7 @@ impl App {
             let label = self.spec_label(&self.agent.clone());
             return self.notice(
                 Level::Info,
-                format!(
-                    "using {label}. To skip this question next time, add `agent = \"{}\"` under [defaults] in ~/.jockey/config.toml",
-                    self.agent
-                ),
+                format!("using {label}, saved as your default model"),
             );
         }
         if spec.provider == self.agent.provider {
@@ -2546,6 +2543,18 @@ impl App {
     }
 
     /// `provider:model@effort` with the versioned id when the model list is known.
+    /// Model choices saved to the global config when they change:
+    /// `defaults.agent`, `cascade.judge`, `cascade.fallback`.
+    pub fn saved_models(&self) -> [(&'static str, &'static str, Option<String>); 3] {
+        let primary = (!self.needs_agent).then(|| self.agent.to_string());
+        let s = |o: &Option<AgentSpec>| o.as_ref().map(|s| s.to_string());
+        [
+            ("defaults", "agent", primary),
+            ("cascade", "judge", s(&self.judge)),
+            ("cascade", "fallback", s(&self.fallback)),
+        ]
+    }
+
     pub fn spec_label(&self, s: &AgentSpec) -> String {
         let info = self
             .model_cache

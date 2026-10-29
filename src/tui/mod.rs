@@ -84,6 +84,8 @@ pub async fn run(o: TuiOptions) -> Result<i32> {
     spawn_ticker(tx.clone());
     spawn_signals(tx.clone());
 
+    // Only changes made in this session are saved, not --agent and friends.
+    let mut saved = app.saved_models();
     // No mouse capture: text selects and copies like in any terminal; PgUp/PgDn scroll.
     let result: Result<()> = async {
         loop {
@@ -98,6 +100,18 @@ pub async fn run(o: TuiOptions) -> Result<i32> {
             while let Ok(m) = rx.try_recv() {
                 app.handle(m).await;
             }
+            let now = app.saved_models();
+            for ((section, key, value), (_, _, before)) in now.iter().zip(&saved) {
+                if value != before
+                    && let Err(e) = crate::config::save_global(section, key, value.as_deref())
+                {
+                    app.notice(
+                        app::Level::Warn,
+                        format!("couldn't save your model choice: {e:#}"),
+                    );
+                }
+            }
+            saved = now;
             if app.external_edit {
                 app.external_edit = false;
                 paused.store(true, Ordering::SeqCst);

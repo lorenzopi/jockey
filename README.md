@@ -33,7 +33,7 @@ You need at least one of `codex`, `claude` or `grok` installed and signed in.
 **Homebrew**:
 
 ```sh
-brew install lorenzopi/jockey/jockey
+brew install lorenzopi/tap/jockey
 ```
 
 jockey tells you on its home screen when a new version is out; `jockey update` installs it the same way you installed jockey.

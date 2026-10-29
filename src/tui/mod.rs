@@ -55,6 +55,12 @@ pub async fn run(o: TuiOptions) -> Result<i32> {
     if o.fallback.is_some() {
         app.fallback = o.fallback;
     }
+    let utx = tx.clone();
+    tokio::spawn(async move {
+        if let Some(u) = crate::update::check().await {
+            let _ = utx.send(Msg::Update(u)).await;
+        }
+    });
     if needs_agent {
         app.needs_agent = true; // home screen first; Enter opens the lab picker
     } else {

@@ -13,6 +13,7 @@ mod steering;
 #[cfg(test)]
 mod testutil;
 mod tui;
+mod update;
 mod workflows;
 
 #[tokio::main]

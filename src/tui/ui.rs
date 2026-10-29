@@ -622,6 +622,20 @@ fn splash(app: &App, height: u16) -> Vec<Line<'static>> {
         format!("  {}", app.cwd.display()),
         dim(),
     )));
+    if let Some(u) = &app.update {
+        lines.push(Line::from(Span::styled(
+            format!(
+                "  ↑ jockey {} is available (you have {}). Update with:",
+                u.latest,
+                env!("CARGO_PKG_VERSION")
+            ),
+            Style::default().fg(theme::accent()),
+        )));
+        lines.push(Line::from(Span::styled(
+            format!("    {}", u.command),
+            Style::default().add_modifier(Modifier::BOLD),
+        )));
+    }
     lines.push(Line::default());
     let key = |k: &str, what: &str| {
         Line::from(vec![
@@ -646,7 +660,13 @@ fn splash(app: &App, height: u16) -> Vec<Line<'static>> {
     } else if room >= MARK_SMALL.len() + lines.len() {
         &MARK_SMALL
     } else if room >= MARK_SMALL.len() + 3 {
-        lines.truncate(3);
+        lines.truncate(3); // title, tagline, cwd
+        if let Some(u) = &app.update {
+            lines.push(Line::from(Span::styled(
+                format!("  ↑ update: {}", u.command),
+                Style::default().fg(theme::accent()),
+            )));
+        }
         &MARK_SMALL
     } else {
         &[]

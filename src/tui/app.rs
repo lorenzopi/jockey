@@ -29,6 +29,8 @@ pub enum Msg {
     Approval(ApprovalRequest, oneshot::Sender<Reply>),
     Models(String, Vec<ModelInfo>),
     Notice(Level, String),
+    /// A newer release exists; shown on the home screen.
+    Update(crate::update::Update),
     Shell {
         cmd: String,
         output: String,
@@ -335,6 +337,7 @@ pub struct App {
     pub zoom: Zoom,
     /// Supervisor pane scroll (lines up from the bottom).
     pub scroll_sup: usize,
+    pub update: Option<crate::update::Update>,
     reviews: u32,
     /// No model chosen yet (no flag, no saved default): ask before running anything.
     pub needs_agent: bool,
@@ -453,6 +456,7 @@ impl App {
             split_flip: false,
             zoom: Zoom::None,
             scroll_sup: 0,
+            update: None,
             reviews: 0,
             critic_count: None,
             needs_agent: false,
@@ -627,6 +631,7 @@ impl App {
                 }
             }
             Msg::Notice(l, t) => self.notice(l, t),
+            Msg::Update(u) => self.update = Some(u),
             Msg::Shell {
                 cmd,
                 output,

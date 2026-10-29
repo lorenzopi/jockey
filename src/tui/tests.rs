@@ -975,3 +975,16 @@ async fn splash_keeps_the_mark_in_a_small_window() {
     let s = screen_sized(&app, 55, 16);
     assert!(s.contains("J O C K E Y") && !s.contains("@#"), "{s}");
 }
+
+#[tokio::test]
+async fn home_screen_shows_an_available_update() {
+    let (mut app, _rx) = app();
+    assert!(!screen(&app).contains("is available"));
+    app.handle(Msg::Update(crate::update::Update {
+        latest: "9.0.0".into(),
+        command: "brew upgrade jockey".into(),
+    }))
+    .await;
+    let s = screen(&app);
+    assert!(s.contains("jockey 9.0.0 is available") && s.contains("brew upgrade jockey"));
+}
